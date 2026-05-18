@@ -290,13 +290,13 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 12px;
-  height: 38px;
-  background: rgba(13, 27, 49, 0.4);
-  border: none; /* 去掉外边框 */
-  border-radius: 6px;
-  box-shadow: inset 0 0 10px rgba(0, 229, 255, 0.05);
-  margin-right: 4px;
+  padding: 0; /* 去掉原有内间距 */
+  height: auto;
+  background: transparent; /* 去掉外部方框背景 */
+  border: none;
+  border-radius: 0;
+  box-shadow: none; /* 去掉内阴影 */
+  margin-right: 0;
 }
 
 .weather-icon {

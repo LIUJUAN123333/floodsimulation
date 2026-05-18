@@ -90,22 +90,18 @@ defineExpose({
   <div class="viewer-wrapper">
     <div ref="cesiumContainer" class="cesium-container"></div>
     
-    <transition name="fade-coords">
-      <div v-show="showCoordinates" class="coordinates-panel">
-        <div class="coord-item">
-          <span class="coord-label">经度</span>
-          <span class="coord-value">{{ mousePosition.lon }}°</span>
-        </div>
-        <div class="coord-item">
-          <span class="coord-label">纬度</span>
-          <span class="coord-value">{{ mousePosition.lat }}°</span>
-        </div>
-        <div class="coord-item">
-          <span class="coord-label">海拔</span>
-          <span class="coord-value">{{ mousePosition.height }} m</span>
-        </div>
+    <div class="coordinates-panel" aria-hidden="false">
+      <div class="coords-row">
+        <span class="coord-label">海拔:</span>
+        <span class="coord-value">{{ mousePosition.height }} 米</span>
+        <span class="coord-gap"></span>
+        <span class="coord-label">经度:</span>
+        <span class="coord-value">{{ mousePosition.lon }}</span>
+        <span class="coord-gap"></span>
+        <span class="coord-label">纬度:</span>
+        <span class="coord-value">{{ mousePosition.lat }}</span>
       </div>
-    </transition>
+    </div>
   </div>
 </template>
 
@@ -123,19 +119,56 @@ defineExpose({
 
 .coordinates-panel {
   position: absolute;
-  bottom: 60px; /* 位置避免遮挡 bottom: 10px; right: 10px 的 logo */
-  right: 15px;
-  background: var(--sys-glass-bg, rgba(13, 27, 49, 0.7));
-  border: 1px solid var(--sys-border-color, #00e5ff);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5), inset 0 0 10px rgba(0, 229, 255, 0.1);
-  backdrop-filter: blur(8px);
-  border-radius: 6px;
-  padding: 8px 15px;
+  bottom: 10px;
+  right: 220px; /* 向左移动以避免遮挡 Logo；如需微调可改为 200px/240px 等 */
+  background: transparent;
+  border-radius: 4px;
+  padding: 6px 10px;
   display: flex;
-  gap: 15px;
-  z-index: 1000;
+  align-items: center;
+  z-index: 9998; /* 低于 logo 的 9999，确保不被遮挡 */
   pointer-events: none;
   font-family: "Microsoft YaHei", sans-serif;
+}
+
+.coords-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(13, 27, 49, 0.55);
+  border: 1px solid rgba(0, 229, 255, 0.12);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45), inset 0 0 8px rgba(0, 229, 255, 0.03);
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+
+.coord-label {
+  color: rgba(255, 255, 255, 0.95);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.coord-value {
+  color: #00e5ff;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: "Courier New", Courier, monospace;
+}
+
+.coord-gap {
+  width: 8px;
+}
+
+@media (max-width: 1200px) {
+  .coordinates-panel {
+    right: 140px; /* 窄屏时减小预留，避免超出可视范围 */
+  }
+}
+
+@media (max-width: 760px) {
+  .coordinates-panel {
+    right: 90px; /* 手机或小屏幕进一步调整 */
+  }
 }
 
 .coord-item {
