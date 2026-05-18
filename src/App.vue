@@ -11,6 +11,7 @@ import TopBar from './disaster-template/components/TopBar.vue';
 import LogoOverlay from './disaster-template/components/LogoOverlay.vue';
 // 加回模板右侧的科技感面板
 import TemplatePanel from './disaster-template/components/TemplatePanel.vue';
+import DisasterGallery from './components/DisasterGallery.vue';
 
 const cesiumViewerRef = ref<any>(null); // 新增 Ref
 const viewer = ref<any>(null);
@@ -136,7 +137,7 @@ const onFlyComplete = () => { showUI.value = true; };
     <!-- 2. 灾害模板右侧的高级展示面板 (与TopBar联动) -->
     <transition name="fade-right">
       <TemplatePanel
-        v-show="showUI && panelVisible"
+        v-show="showUI && panelVisible && activePanelId !== 'demo'"
         side="right"
         :title="panelTitle"
         :subtitle="panelSubtitle"
@@ -145,6 +146,13 @@ const onFlyComplete = () => { showUI.value = true; };
           <DataProcessingPanel :viewer="viewer" :is-simulating="isSimulating" @start-simulation="onStartSimulation" @menu-select="onMenuSelect" />
         </template>
       </TemplatePanel>
+    </transition>
+
+    <!-- 独立的案例演示大面板 -->
+    <transition name="fade-right">
+      <div v-if="showUI && panelVisible && activePanelId === 'demo'" class="gallery-overlay">
+        <DisasterGallery />
+      </div>
     </transition>
 
     <transition name="fade-bottom">
@@ -188,6 +196,16 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 
 .v0226c-panels { position: absolute; inset: 0; pointer-events: none; z-index: 100; }
 .v0226c-panels > * { pointer-events: auto; }
+
+.gallery-overlay {
+  position: absolute;
+  top: 90px;
+  right: 20px;
+  width: 900px;
+  max-width: calc(100vw - 40px);
+  z-index: 1000;
+  pointer-events: auto;
+}
 
 .fade-top-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1); }
 .fade-top-leave-active { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
