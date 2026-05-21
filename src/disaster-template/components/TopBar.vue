@@ -44,6 +44,7 @@ const navMenus = ref([
 const activeNavMenu = ref('simulation');
 const emit = defineEmits<{
   (e: 'open-panel', payload: { id: string; title: string }): void;
+  (e: 'reset-ui'): void;
 }>();
 
 const handleNavClick = (menu: { id: string; name: string }) => {
@@ -53,6 +54,13 @@ const handleNavClick = (menu: { id: string; name: string }) => {
     activeNavMenu.value = menu.id;
   }
   emit('open-panel', { id: menu.id, title: menu.name });
+};
+
+const handleSubsystemClick = (id: string) => {
+  if (id === 'flood') {
+    activeNavMenu.value = ''; // 重置顶部导航高亮
+    emit('reset-ui');
+  }
 };
 
 const updateTime = () => {
@@ -98,6 +106,7 @@ onUnmounted(() => {
         class="orbit-node"
         :class="{ active: sys.id === props.activeSubsystem }"
         :style="{ '--node-color': sys.color }"
+        @click="handleSubsystemClick(sys.id)"
       >
         <!-- 洪水 -->
         <svg v-if="sys.id === 'flood'" class="node-icon" viewBox="0 0 24 24" aria-hidden>

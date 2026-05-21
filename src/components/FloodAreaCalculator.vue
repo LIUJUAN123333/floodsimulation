@@ -52,9 +52,9 @@ watch(lastLoadedFloodJson, (newData) => {
 <style scoped>
 .flood-area-panel {
   position: absolute;
-  top: 350px;
-  right: 340px;
-  z-index: 1000;
+  top: 725px;      /* 将位置移到左上角，避开右侧的所有控制面板 */
+  right: 20px;
+  z-index: 10001; /* 保持最顶层级 */
   width: 280px;
   background-color: rgba(4, 20, 37, 0.9);
   border: 1px solid #31467D;

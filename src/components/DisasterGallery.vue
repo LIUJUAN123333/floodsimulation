@@ -55,14 +55,19 @@
             {{ item.desc }}
           </p>
           <div class="tags">
-            <span 
-              class="tag" 
-              v-for="(tag, index) in item.tags" 
-              :key="index"
-              :class="{ 'tag-highlight': tag === 'SHOWCASE' }"
-            >
-              {{ tag }}
-            </span>
+            <template v-for="(tag, index) in item.tags" :key="index">
+              <button
+                v-if="tag === 'SHOWCASE'"
+                class="tag tag-highlight showcase-tag"
+                type="button"
+                @click.stop="emitShowcase(item.id)"
+              >
+                {{ tag }}
+              </button>
+              <span v-else class="tag">
+                {{ tag }}
+              </span>
+            </template>
           </div>
         </div>
       </div>
@@ -78,19 +83,29 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 
+type ShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao';
+
+const emit = defineEmits<{
+  showcase: [caseId: ShowcaseCaseId];
+}>();
+
+// 导入本地图片
+import imgXiaojiaqiao from '../案例图片/肖家桥.png';
+import imgJinsha from '../案例图片/金沙江.png';
+
 // 原始数据源
 const cases = ref([
   {
     id: 'xiaojiaqiao',
     title: '肖家桥',
-    img: 'https://via.placeholder.com/320x190/061120/00e5ff?text=XIAOJIAQIAO+FLOOD+MODEL',
+    img: imgXiaojiaqiao,
     desc: '肖家桥地区因地形狭长突发山洪风险极高。本案例采用启发式元胞自动机（CA）模型，将空间区域离散为规则元胞网格，基于局部水动力转移规则，动态模拟极端暴雨条件下的地表径流产汇流过程，精准推演洪水扩散路径与淹没演变趋势。',
     tags: ['洪水灾害', '山洪爆发', '三维淹没', 'SHOWCASE']
   },
   {
-    id: 'jinsha',
+    id: 'jinshajiang',
     title: '金沙江',
-    img: 'https://via.placeholder.com/320x190/061120/00e5ff?text=JINSHA+RIVER+LANDSLIDE',
+    img: imgJinsha,
     desc: '金沙江白格高位滑坡曾引发堵江蓄水及溃坝特大洪水灾害。本案例引入多变量耦合元胞自动机（CA）模型，通过局部邻域的状态迭代实现大尺度复杂灾害全链条的快速高精度仿真。',
     tags: ['洪水灾害', '堰塞湖', '灾害全链条', 'SHOWCASE']
   }
@@ -134,6 +149,12 @@ const toggleDropdown = () => {
 const selectTag = (tag: string) => {
   selectedTag.value = tag;
   showDropdown.value = false;
+};
+
+const emitShowcase = (caseId: string) => {
+  if (caseId === 'jinshajiang' || caseId === 'xiaojiaqiao') {
+    emit('showcase', caseId);
+  }
 };
 </script>
 
@@ -408,6 +429,16 @@ const selectTag = (tag: string) => {
   border-radius: 14px;
   font-size: 11px;
   font-weight: 500;
+}
+
+.showcase-tag {
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.showcase-tag:hover {
+  background: rgba(0, 229, 255, 0.28);
+  box-shadow: 0 0 14px var(--sys-bg-glow);
 }
 
 .tag-highlight {

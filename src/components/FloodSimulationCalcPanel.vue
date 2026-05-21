@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue';
 import * as Cesium from 'cesium';
+import StyledFileInput from './StyledFileInput.vue';
 
 type TabType = 'simulation' | 'results' | 'rowcol' | 'outputpath' | null;
 
@@ -319,13 +320,13 @@ onMounted(() => {
       <div class="panel-content">
         <div v-if="activeTab === 'simulation'">
           <label>DEM 文件（dem.asc）：</label>
-          <input type="file" @change="handleFileChange($event, 'dem')" accept=".asc" />
+          <StyledFileInput accept=".asc" button-text="选择 DEM" placeholder="未选择 dem.asc" @change="handleFileChange($event, 'dem')" />
 
           <label>粗糙度文件（cao.asc）：</label>
-          <input type="file" @change="handleFileChange($event, 'cao')" accept=".asc" />
+          <StyledFileInput accept=".asc" button-text="选择粗糙度" placeholder="未选择 cao.asc" @change="handleFileChange($event, 'cao')" />
 
           <label>溃口文件（InputRiver.dat）：</label>
-          <input type="file" @change="handleFileChange($event, 'river')" accept=".dat,.txt" />
+          <StyledFileInput accept=".dat,.txt" button-text="选择溃口" placeholder="未选择 InputRiver.dat" @change="handleFileChange($event, 'river')" />
           
      
 
@@ -360,10 +361,10 @@ onMounted(() => {
 
         <div v-if="activeTab === 'rowcol'">
           <label>选择 ASCII 文件：</label>
-          <input type="file" @change="handleAsciiRowColFileChange" accept=".asc" />
+          <StyledFileInput accept=".asc" button-text="选择 ASCII" placeholder="未选择 ASCII 文件" @change="handleAsciiRowColFileChange" />
 
           <label>选择绘制文件（TXT）：</label>
-          <input type="file" @change="handleLineFileChange" accept=".txt" />
+          <StyledFileInput accept=".txt" button-text="选择 TXT" placeholder="未选择绘制 TXT 文件" @change="handleLineFileChange" />
 
           <button class="btn" @click="exportPointCoordinatesTXT">
             导出点位坐标（TXT）
@@ -435,10 +436,6 @@ label {
   margin-bottom: 4px;
   font-weight: bold;
   color: #333;
-}
-
-input[type="file"] {
-  width: 100%;
 }
 
 button {

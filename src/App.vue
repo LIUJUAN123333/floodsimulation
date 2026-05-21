@@ -5,6 +5,8 @@ import { EllipsoidTerrainProvider, createWorldTerrainAsync } from 'cesium';
 import CesiumViewer from './components/CesiumViewer.vue';
 import DataProcessingPanel from './components/DataProcessingPanel.vue';
 import FloodAreaCalculator from './components/FloodAreaCalculator.vue';
+import FloodLoader from './components/FloodLoader.vue';
+import { lastLoadedFloodJson, floodCellSize, currentFloodPrimitive, floodPlaybackToken } from './store/floodState';
 
 import LoadingScreen from './disaster-template/components/LoadingScreen.vue';
 import TopBar from './disaster-template/components/TopBar.vue';
@@ -14,6 +16,7 @@ import TemplatePanel from './disaster-template/components/TemplatePanel.vue';
 import DisasterGallery from './components/DisasterGallery.vue';
 
 const cesiumViewerRef = ref<any>(null); // 新增 Ref
+const floodLoaderRef = ref<InstanceType<typeof FloodLoader> | null>(null);
 const viewer = ref<any>(null);
 const terrainEnabled = ref(true);
 const terrainSwitching = ref(false);
@@ -100,6 +103,46 @@ const isSimulating = ref(false);
 const onStartSimulation = () => { isSimulating.value = true; };
 const onMenuSelect = (_id: string) => {};
 
+type ShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao';
+
+const onShowcase = (caseId: ShowcaseCaseId) => {
+  if (!floodLoaderRef.value) {
+    console.warn('FloodLoader 尚未准备好');
+    return;
+  }
+
+  panelVisible.value = false;
+  floodLoaderRef.value.playShowcase(caseId);
+};
+
+const resetFloodScene = () => {
+  clearTimeout(hideTimeout);
+  floodPlaybackToken.value += 1;
+  floodLoaderRef.value?.resetFloodData();
+
+  if (viewer.value) {
+    if (currentFloodPrimitive.value) {
+      viewer.value.scene.primitives.remove(currentFloodPrimitive.value);
+      currentFloodPrimitive.value = null;
+    }
+    viewer.value.entities.removeAll();
+  }
+
+  lastLoadedFloodJson.value = null;
+  floodCellSize.value = 0;
+  isSimulating.value = false;
+  panelVisible.value = false;
+  showV0226CPanels.value = false;
+  activePanelId.value = '';
+  panelTitle.value = '';
+  panelSubtitle.value = '';
+  showUI.value = true;
+
+  if (cesiumViewerRef.value) {
+    cesiumViewerRef.value.executeFlyTo();
+  }
+};
+
 // ----------------- FlyTo与UI进场控制 -----------------
 const onLoadingComplete = () => { 
   if (cesiumViewerRef.value) {
@@ -116,10 +159,11 @@ const onFlyComplete = () => { showUI.value = true; };
     <LoadingScreen :is-ready="isMapReady" :system-title="systemTitle" @loading-complete="onLoadingComplete" />
     
     <transition name="fade-top">
-      <TopBar v-show="showUI" :system-title="systemTitle" active-subsystem="flood" @open-panel="openPanel" />
+      <TopBar v-show="showUI" :system-title="systemTitle" active-subsystem="flood" @open-panel="openPanel" @reset-ui="resetFloodScene" />
     </transition>
     
     <CesiumViewer ref="cesiumViewerRef" @viewer-ready="onViewerReady" @fly-complete="onFlyComplete" />
+    <FloodLoader v-if="viewer" ref="floodLoaderRef" class="showcase-flood-loader" :viewer="viewer" />
     
     <transition name="fade-bottom">
       <button v-show="showUI" class="terrain-toggle-btn" :disabled="!viewer || terrainSwitching" @click="toggleTerrain">
@@ -151,7 +195,7 @@ const onFlyComplete = () => { showUI.value = true; };
     <!-- 独立的案例演示大面板 -->
     <transition name="fade-right">
       <div v-if="showUI && panelVisible && activePanelId === 'demo'" class="gallery-overlay">
-        <DisasterGallery />
+        <DisasterGallery @showcase="onShowcase" />
       </div>
     </transition>
 
@@ -207,6 +251,17 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
   pointer-events: auto;
 }
 
+.showcase-flood-loader {
+  position: absolute;
+  left: -9999px;
+  top: -9999px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
 .fade-top-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1); }
 .fade-top-leave-active { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
 .fade-top-enter-from, .fade-top-leave-to { opacity: 0; transform: translateY(-50px); }
@@ -222,4 +277,5 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 .fade-bottom-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1) 0.9s; }
 .fade-bottom-leave-active { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
 .fade-bottom-enter-from, .fade-bottom-leave-to { opacity: 0; transform: translateY(50px); }
+
 </style>

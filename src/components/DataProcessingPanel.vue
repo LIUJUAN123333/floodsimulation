@@ -2,6 +2,7 @@
 import { nextTick, onMounted, ref, watch } from 'vue';
 import * as Cesium from 'cesium';
 import FloodLoader from './FloodLoader.vue';
+import StyledFileInput from './StyledFileInput.vue';
 
 const props = defineProps<{
   isSimulating?: boolean;
@@ -722,15 +723,15 @@ onMounted(async () => {
         <form id="convertForm" enctype="multipart/form-data" @submit.prevent="handleConvertSubmit">
           <div class="form-group">
             <label class="form-label" for="convertFile">选择 TIFF 文件</label>
-            <input
-              type="file"
-              class="form-control"
-              id="convertFile"
+            <StyledFileInput
+              input-id="convertFile"
               name="file"
               accept=".tif,.tiff"
+              button-text="选择 TIFF"
+              placeholder="未选择 TIFF 文件"
               required
               @change="handleConvertFileChange"
-            >
+            />
           </div>
           <button type="submit" class="btn btn-primary" :disabled="convertLoading">
             {{ convertLoading ? '转换中...' : '转换为 ASC' }}
@@ -745,26 +746,26 @@ onMounted(async () => {
         <form id="roughnessForm" enctype="multipart/form-data" @submit.prevent="handleRoughnessSubmit">
           <div class="form-group">
             <label class="form-label" for="roughnessFile">选择 ASC/TXT 文件</label>
-            <input
-              type="file"
-              class="form-control"
-              id="roughnessFile"
+            <StyledFileInput
+              input-id="roughnessFile"
               name="file"
               accept=".asc,.txt,.tif,.tiff"
+              button-text="选择文件"
+              placeholder="未选择 ASC/TXT 文件"
               required
               @change="handleRoughnessFileChange"
-            >
+            />
           </div>
           <div class="form-group">
             <label class="form-label" for="roughnessTifFile">选择 TIF 文件（用于识别经纬度）</label>
-            <input
-              type="file"
-              class="form-control"
-              id="roughnessTifFile"
+            <StyledFileInput
+              input-id="roughnessTifFile"
               name="tif_file"
               accept=".tif,.tiff"
+              button-text="选择 TIF"
+              placeholder="未选择 TIF 文件"
               @change="handleRoughnessTifFileChange"
-            >
+            />
           </div>
           <label class="form-check-label">
             <input v-model="roughnessShowBounds" type="checkbox" name="show_bounds" value="true">
@@ -783,38 +784,38 @@ onMounted(async () => {
         <form id="getAsciiValueForm" enctype="multipart/form-data" @submit.prevent="handleRowcolSubmit">
           <div class="form-group">
             <label class="form-label" for="asciiFile">选择 ASCII 文件</label>
-            <input
-              type="file"
-              class="form-control"
-              id="asciiFile"
+            <StyledFileInput
+              input-id="asciiFile"
               name="ascii_file"
               accept=".asc,.txt"
+              button-text="选择 ASCII"
+              placeholder="未选择 ASCII 文件"
               required
               @change="handleAsciiFileChange"
-            >
+            />
           </div>
           <div class="form-group">
             <label class="form-label" for="asciiTifFile">选择 TIF 文件（用于识别经纬度）</label>
-            <input
-              type="file"
-              class="form-control"
-              id="asciiTifFile"
+            <StyledFileInput
+              input-id="asciiTifFile"
               name="tif_file"
               accept=".tif,.tiff"
+              button-text="选择 TIF"
+              placeholder="未选择 TIF 文件"
               @change="handleAsciiTifFileChange"
-            >
+            />
           </div>
           <div class="form-group">
             <label class="form-label" for="lineTxtFile">选择绘制 TXT 文件</label>
-            <input
-              type="file"
-              class="form-control"
-              id="lineTxtFile"
+            <StyledFileInput
+              input-id="lineTxtFile"
               name="line_txt_file"
               accept=".txt"
+              button-text="选择 TXT"
+              placeholder="未选择绘制 TXT 文件"
               required
               @change="handleLineTxtFileChange"
-            >
+            />
           </div>
           <button type="submit" class="btn btn-primary" :disabled="rowcolLoading">
             {{ rowcolLoading ? '导出中...' : '导出行列号' }}
@@ -862,13 +863,13 @@ onMounted(async () => {
         <div v-if="activeItem === 'params'">
           <div class="panel-content">
             <label class="form-label">DEM 文件（dem.asc）：</label>
-            <input class="form-control" style="margin-bottom: 10px;" type="file" @change="handleFileChange($event, 'dem')" accept=".asc" />
+            <StyledFileInput class="file-field" accept=".asc" button-text="选择 DEM" placeholder="未选择 dem.asc" @change="handleFileChange($event, 'dem')" />
 
             <label class="form-label">粗糙度文件（cao.asc）：</label>
-            <input class="form-control" style="margin-bottom: 10px;" type="file" @change="handleFileChange($event, 'cao')" accept=".asc" />
+            <StyledFileInput class="file-field" accept=".asc" button-text="选择粗糙度" placeholder="未选择 cao.asc" @change="handleFileChange($event, 'cao')" />
 
             <label class="form-label">溃口文件（InputRiver.dat）：</label>
-            <input class="form-control" style="margin-bottom: 15px;" type="file" @change="handleFileChange($event, 'river')" accept=".dat,.txt" />
+            <StyledFileInput class="file-field file-field-last" accept=".dat,.txt" button-text="选择溃口" placeholder="未选择 InputRiver.dat" @change="handleFileChange($event, 'river')" />
 
             <button class="btn btn-primary" @click="uploadAllFiles" :disabled="message === '🚀 模拟中...（30~60秒）' || message.includes('正在打包')">
               {{ message === '🚀 模拟中...（30~60秒）' || message.includes('正在打包') ? '模拟中...' : '开始模拟' }}
@@ -1062,6 +1063,14 @@ onMounted(async () => {
 .form-control:focus {
   outline: none;
   border-color: var(--sys-theme-color, #00e5ff);
+}
+
+.file-field {
+  margin-bottom: 10px;
+}
+
+.file-field-last {
+  margin-bottom: 15px;
 }
 
 .btn {

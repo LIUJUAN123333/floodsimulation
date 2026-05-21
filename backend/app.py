@@ -5,6 +5,7 @@ from datetime import datetime
 import rasterio
 from rasterio.warp import transform
 import math
+import xml.etree.ElementTree as ET
 # 导入现有的处理模块
 from ASC文件获取粗糙度 import ascii_to_roughness_slope_based, calculate_ascii_bounds, get_boundary_roughness_values, get_ascii_values_by_coordinates, clip_ascii_by_polygon, set_utm_epsg, get_utm_epsg_from_tif
 from TIFF转ASC格式 import dem_to_ascii_gdal
@@ -25,6 +26,100 @@ def add_cors_headers(response):
 # 确保上传和输出文件夹存在
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
+
+SHOWCASE_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'data_showcase'))
+SHOWCASE_CASES = {
+    'jinshajiang': {
+        'name': '金沙江',
+        'directory': os.path.join(SHOWCASE_ROOT, 'jinshajiang'),
+        'utm_zone': 47,
+        'asc_file': 'dem (7).asc',
+        'xml_file': 'Flood_New.xml'
+    },
+    'xiaojiaqiao': {
+        'name': '肖家桥',
+        'directory': os.path.join(SHOWCASE_ROOT, 'xiaojiaqiao'),
+        'utm_zone': 48,
+        'asc_file': 'CCC (1).asc',
+        'xml_file': 'Flood_New.xml'
+    }
+}
+SHOWCASE_ALLOWED_EXTENSIONS = {'.asc', '.xml', '.json'}
+
+
+def get_showcase_case(case_id):
+    case_config = SHOWCASE_CASES.get(case_id)
+    if not case_config:
+        return None, jsonify({'success': False, 'message': '未知案例'}), 404
+
+    case_dir = os.path.abspath(case_config['directory'])
+    if not os.path.isdir(case_dir):
+        return None, jsonify({'success': False, 'message': f'案例目录不存在: {case_dir}'}), 404
+
+    return {**case_config, 'directory': case_dir}, None, None
+
+
+def get_showcase_file_path(case_config, filename):
+    normalized_filename = filename.replace('\\', '/')
+    if '/' in normalized_filename or normalized_filename in ('', '.', '..'):
+        return None
+
+    extension = os.path.splitext(normalized_filename)[1].lower()
+    if extension not in SHOWCASE_ALLOWED_EXTENSIONS:
+        return None
+
+    file_path = os.path.abspath(os.path.join(case_config['directory'], normalized_filename))
+    case_dir = os.path.abspath(case_config['directory'])
+    if os.path.commonpath([case_dir, file_path]) != case_dir:
+        return None
+    if not os.path.isfile(file_path):
+        return None
+
+    return file_path
+
+
+def count_showcase_frames(xml_path):
+    try:
+        tree = ET.parse(xml_path)
+        return len(tree.getroot().findall('.//flood'))
+    except Exception:
+        return 0
+
+
+@app.route('/api/showcase/<case_id>/manifest', methods=['GET'])
+def get_showcase_manifest(case_id):
+    case_config, error_response, status_code = get_showcase_case(case_id)
+    if error_response:
+        return error_response, status_code
+
+    asc_path = get_showcase_file_path(case_config, case_config['asc_file'])
+    xml_path = get_showcase_file_path(case_config, case_config['xml_file'])
+    if not asc_path or not xml_path:
+        return jsonify({'success': False, 'message': '案例 ASC 或 XML 文件不存在'}), 404
+
+    return jsonify({
+        'success': True,
+        'caseId': case_id,
+        'name': case_config['name'],
+        'utmZone': case_config['utm_zone'],
+        'ascFile': case_config['asc_file'],
+        'xmlFile': case_config['xml_file'],
+        'jsonCount': count_showcase_frames(xml_path),
+        'fileBaseUrl': f"{request.host_url.rstrip('/')}/api/showcase/{case_id}/file"
+    })
+
+
+@app.route('/api/showcase/<case_id>/file/<path:filename>', methods=['GET'])
+def get_showcase_file(case_id, filename):
+    case_config, error_response, status_code = get_showcase_case(case_id)
+    if error_response:
+        return error_response, status_code
+
+    file_path = get_showcase_file_path(case_config, filename)
+    if not file_path:
+        return jsonify({'success': False, 'message': '文件不存在或不允许访问'}), 404
+
+    return send_from_directory(case_config['directory'], os.path.basename(file_path))
 
 # 辅助函数：清理临时文件
 def cleanup_file(file_path):

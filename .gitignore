@@ -4,3 +4,5 @@
 *.log
 backend/outputs/
 *.asc
+data_showcase/
+../data_showcase/

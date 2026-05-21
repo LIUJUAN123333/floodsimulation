@@ -3,7 +3,8 @@ import { ref } from 'vue';
 import * as Cesium from 'cesium';
 import DrawTriangleMesh from '../js/DrawTriangleMesh';
 import * as proj4 from 'proj4';
-import { lastLoadedFloodJson, floodCellSize } from '../store/floodState';
+import { lastLoadedFloodJson, floodCellSize, currentFloodPrimitive, floodPlaybackToken } from '../store/floodState';
+import StyledFileInput from './StyledFileInput.vue';
 
 type Proj4Like = {
   defs: (name: string, projection: string) => void;
@@ -20,14 +21,32 @@ const props = defineProps({
 });
 
 const isLoading = ref(false);
-const currentPrimitive = ref<Cesium.Primitive | null>(null);
-const playToken = ref(0);
 const frameIntervalMs = 10;
 const ascFile = ref<File | null>(null);
 const utmZone = ref<number>(48);
 const parsedCellsize = ref<number | null>(null);
 const coordMessage = ref('');
 const floodFiles = ref<File[]>([]);
+
+type ShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao';
+
+type ShowcaseManifest = {
+  success: boolean;
+  caseId: ShowcaseCaseId;
+  name: string;
+  utmZone: number;
+  ascFile: string;
+  xmlFile: string;
+  jsonCount: number;
+  fileBaseUrl: string;
+  message?: string;
+};
+
+type ShowcasePlaybackOptions = {
+  initialBufferCount: number;
+  prefetchCount: number;
+  frameIntervalMs: number;
+};
 
 type AscHeader = {
   ncols: number;
@@ -47,6 +66,55 @@ type LonLatBounds = {
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+
+const encodeFileName = (fileName: string) => fileName.split('/').map(encodeURIComponent).join('/');
+
+const fetchText = async (url: string) => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`读取失败 ${response.status}: ${url}`);
+  }
+  return response.text();
+};
+
+const fetchJson = async (url: string) => {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`读取失败 ${response.status}: ${url}`);
+  }
+  return response.json();
+};
+
+const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId): ShowcasePlaybackOptions => {
+  if (caseId === 'jinshajiang') {
+    return {
+      initialBufferCount: 80,
+      prefetchCount: 12,
+      frameIntervalMs: 8
+    };
+  }
+
+  return {
+    initialBufferCount: 8,
+    prefetchCount: 2,
+    frameIntervalMs: 12
+  };
+};
+
+const nextPlaybackToken = () => {
+  floodPlaybackToken.value += 1;
+  return floodPlaybackToken.value;
+};
+
+const isPlaybackCurrent = (token: number) => token === floodPlaybackToken.value;
+
+const removeCurrentFloodPrimitive = () => {
+  if (currentFloodPrimitive.value) {
+    props.viewer.scene.primitives.remove(currentFloodPrimitive.value);
+    currentFloodPrimitive.value = null;
+  }
+};
 
 const parseAscHeader = (text: string): AscHeader => {
   const headerMap: Record<string, number> = {};
@@ -154,6 +222,97 @@ const handleAscFileChange = async (event: Event) => {
   }
 };
 
+const parseFloodUrlsFromXml = (xmlText: string) => {
+  const parser = new DOMParser();
+  const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+  const parseError = xmlDoc.querySelector('parsererror');
+  if (parseError) {
+    throw new Error('XML 配置文件解析失败');
+  }
+
+  return Array.from(xmlDoc.getElementsByTagName("flood"))
+    .map((item) => item.getAttribute("url"))
+    .filter((url): url is string => Boolean(url));
+};
+
+const prepareFloodScene = (ascText: string, zone: number, label: string) => {
+  const ascHeader = parseAscHeader(ascText);
+  parsedCellsize.value = ascHeader.cellsize;
+  floodCellSize.value = ascHeader.cellsize;
+  DrawTriangleMesh.setGridCellSize(ascHeader.cellsize);
+  utmZone.value = zone;
+
+  const bounds = calcLonLatByAscHeader(ascHeader, zone);
+  const centerPos = Cesium.Cartesian3.fromDegrees(bounds.west, bounds.north, 0);
+  DrawTriangleMesh.setFloodCenterPosition(centerPos);
+  coordMessage.value = `${label} 坐标识别成功：西经度 ${bounds.west.toFixed(6)}，北纬度 ${bounds.north.toFixed(6)}`;
+
+  props.viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(bounds.centerLon, bounds.centerLat, 20000),
+    duration: 0.8
+  });
+
+  removeCurrentFloodPrimitive();
+
+  return bounds;
+};
+
+const renderFloodFrames = async (
+  token: number,
+  floodUrls: string[],
+  readJsonData: (url: string) => Promise<any>
+) => {
+  let firstPrimitive: Cesium.Primitive | null = null;
+
+  for (const url of floodUrls) {
+    if (!isPlaybackCurrent(token)) {
+      break;
+    }
+
+    const jsonData = await readJsonData(url);
+    if (!isPlaybackCurrent(token)) {
+      break;
+    }
+
+    lastLoadedFloodJson.value = jsonData;
+    const primitive = DrawTriangleMesh(jsonData);
+
+    removeCurrentFloodPrimitive();
+
+    currentFloodPrimitive.value = primitive;
+    props.viewer.scene.primitives.add(primitive);
+
+    if (!firstPrimitive) {
+      firstPrimitive = primitive;
+    }
+
+    console.log("Flood data loaded and rendered:", url);
+    await sleep(frameIntervalMs);
+  }
+
+  return firstPrimitive;
+};
+
+const flyToFirstPrimitive = (firstPrimitive: Cesium.Primitive | null, bounds: LonLatBounds) => {
+  if (!firstPrimitive) {
+    return;
+  }
+
+  const primitiveWithBound = firstPrimitive as Cesium.Primitive & {
+    _boundingSphereWorld?: Cesium.BoundingSphere;
+  };
+  if (primitiveWithBound._boundingSphereWorld) {
+    props.viewer.camera.flyToBoundingSphere(primitiveWithBound._boundingSphereWorld, {
+      duration: 1.2,
+      offset: new Cesium.HeadingPitchRange(0.0, -0.7, primitiveWithBound._boundingSphereWorld.radius * 3.0)
+    });
+  } else {
+    props.viewer.camera.flyTo({
+      destination: Cesium.Cartesian3.fromDegrees(bounds.centerLon, bounds.centerLat, 20000)
+    });
+  }
+};
+
 const loadFloodData = async () => {
   if (isLoading.value) return;
   if (!ascFile.value) {
@@ -166,16 +325,11 @@ const loadFloodData = async () => {
   }
 
   isLoading.value = true;
-  playToken.value += 1;
-  const token = playToken.value;
+  const token = nextPlaybackToken();
 
   try {
     const ascText = await ascFile.value.text();
-    const ascHeader = parseAscHeader(ascText);
-    parsedCellsize.value = ascHeader.cellsize;
-    floodCellSize.value = ascHeader.cellsize;
-    DrawTriangleMesh.setGridCellSize(ascHeader.cellsize);
-    const bounds = calcLonLatByAscHeader(ascHeader, utmZone.value);
+    const bounds = prepareFloodScene(ascText, utmZone.value, '识别');
 
     // 1. 读取 XML 索引
     const xmlFile = floodFiles.value.find(f => f.name.toLowerCase().endsWith('.xml'));
@@ -185,109 +339,162 @@ const loadFloodData = async () => {
       return;
     }
     const xmlText = await xmlFile.text();
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(xmlText, "text/xml");
-    const floodElements = xmlDoc.getElementsByTagName("flood");
-
-    if (floodElements.length === 0) {
-      console.error("No flood data found in XML");
-      return;
-    }
-
-    // 获取全部数据文件 URL
-    const floodUrls = Array.from(floodElements)
-      .map((item) => item.getAttribute("url"))
-      .filter((url): url is string => Boolean(url));
+    const floodUrls = parseFloodUrlsFromXml(xmlText);
 
     if (floodUrls.length === 0) {
       console.error("No valid flood urls found in XML");
       return;
     }
 
-    // 3. 渲染数据
-    // 使用 ASC 头部 + 投影带号识别的经纬度
-    const centerPos = Cesium.Cartesian3.fromDegrees(bounds.west, bounds.north, 0);
-    DrawTriangleMesh.setFloodCenterPosition(centerPos);
-    coordMessage.value = `识别坐标成功：西经度 ${bounds.west.toFixed(6)}，北纬度 ${bounds.north.toFixed(6)}`;
-
-    // 点击后立即把视角移动到洪水区域中心
-    props.viewer.camera.flyTo({
-      destination: Cesium.Cartesian3.fromDegrees(bounds.centerLon, bounds.centerLat, 20000),
-      duration: 0.8
-    });
-
-    // 如果之前有渲染的，先移除
-    if (currentPrimitive.value) {
-      props.viewer.scene.primitives.remove(currentPrimitive.value);
-      currentPrimitive.value = null;
-    }
-
-    // 2. 按 XML 顺序逐帧加载并渲染（流动效果）
-    let firstPrimitive: Cesium.Primitive | null = null;
-    for (const url of floodUrls) {
-      if (token !== playToken.value) {
-        break;
-      }
-
+    const firstPrimitive = await renderFloodFrames(token, floodUrls, async (url) => {
       const jsonFile = floodFiles.value.find(f => f.name === url || f.webkitRelativePath.endsWith(url));
       if (!jsonFile) {
-        console.warn(`未找到名为 ${url} 的数据文件，跳过渲染`);
-        continue;
+        throw new Error(`未找到名为 ${url} 的数据文件`);
       }
 
       const jsonText = await jsonFile.text();
-      const jsonData = JSON.parse(jsonText);
-
-      lastLoadedFloodJson.value = jsonData;
-
-      const primitive = DrawTriangleMesh(jsonData);
-
-      if (currentPrimitive.value) {
-        props.viewer.scene.primitives.remove(currentPrimitive.value);
-      }
-
-      currentPrimitive.value = primitive;
-      props.viewer.scene.primitives.add(primitive);
-
-      if (!firstPrimitive) {
-        firstPrimitive = primitive;
-      }
-
-      console.log("Flood data loaded and rendered:", url);
-      await sleep(frameIntervalMs);
-    }
+      return JSON.parse(jsonText);
+    });
 
     // 视角定位到第一份数据包围球，避免固定经纬度偏差
-    if (firstPrimitive) {
-      const primitiveWithBound = firstPrimitive as Cesium.Primitive & {
-        _boundingSphereWorld?: Cesium.BoundingSphere;
-      };
-      if (primitiveWithBound._boundingSphereWorld) {
-        props.viewer.camera.flyToBoundingSphere(primitiveWithBound._boundingSphereWorld, {
-          duration: 1.2,
-          offset: new Cesium.HeadingPitchRange(0.0, -0.7, primitiveWithBound._boundingSphereWorld.radius * 3.0)
-        });
-      } else {
-        props.viewer.camera.flyTo({
-          destination: Cesium.Cartesian3.fromDegrees(bounds.centerLon, bounds.centerLat, 20000)
-        });
-      }
-    }
+    flyToFirstPrimitive(firstPrimitive, bounds);
     console.log("Flood files played:", floodUrls.length);
   } catch (error) {
     console.error("Error loading flood data:", error);
+    coordMessage.value = error instanceof Error ? error.message : '洪水数据加载失败';
   } finally {
-    if (token === playToken.value) {
+    if (isPlaybackCurrent(token)) {
       isLoading.value = false;
     }
   }
 };
+
+const resetFloodData = () => {
+  nextPlaybackToken();
+  removeCurrentFloodPrimitive();
+  lastLoadedFloodJson.value = null;
+  floodCellSize.value = 0;
+  isLoading.value = false;
+  coordMessage.value = '';
+};
+
+const renderPrefetchedFloodFrames = async (
+  token: number,
+  floodUrls: string[],
+  readJsonData: (url: string) => Promise<any>,
+  options: ShowcasePlaybackOptions
+) => {
+  const preloadQueue = new Map<string, Promise<any>>();
+  let firstPrimitive: Cesium.Primitive | null = null;
+
+  const preloadFrom = (startIndex: number) => {
+    const endIndex = Math.min(floodUrls.length, startIndex + options.prefetchCount);
+    for (let i = startIndex; i < endIndex; i += 1) {
+      const url = floodUrls[i];
+      if (!preloadQueue.has(url)) {
+        preloadQueue.set(url, readJsonData(url));
+      }
+    }
+  };
+
+  const initialBufferCount = Math.min(floodUrls.length, options.initialBufferCount);
+  preloadFrom(0);
+  for (let index = 0; index < initialBufferCount; index += 1) {
+    if (!isPlaybackCurrent(token)) {
+      return null;
+    }
+    preloadFrom(index);
+    const url = floodUrls[index];
+    await (preloadQueue.get(url) ?? readJsonData(url));
+  }
+  coordMessage.value = '缓冲完成，正在播放案例数据...';
+
+  for (let index = 0; index < floodUrls.length; index += 1) {
+    if (!isPlaybackCurrent(token)) {
+      break;
+    }
+
+    preloadFrom(index);
+    const url = floodUrls[index];
+    const jsonData = await (preloadQueue.get(url) ?? readJsonData(url));
+    preloadQueue.delete(url);
+
+    if (!isPlaybackCurrent(token)) {
+      break;
+    }
+
+    lastLoadedFloodJson.value = jsonData;
+    const primitive = DrawTriangleMesh(jsonData);
+    removeCurrentFloodPrimitive();
+
+    currentFloodPrimitive.value = primitive;
+    props.viewer.scene.primitives.add(primitive);
+
+    if (!firstPrimitive) {
+      firstPrimitive = primitive;
+    }
+
+    console.log("Flood data loaded and rendered:", url);
+    await sleep(options.frameIntervalMs);
+    await nextFrame();
+  }
+
+  return firstPrimitive;
+};
+
+const playShowcase = async (caseId: ShowcaseCaseId) => {
+  if (isLoading.value) {
+    nextPlaybackToken();
+  }
+
+  isLoading.value = true;
+  const token = nextPlaybackToken();
+
+  try {
+    coordMessage.value = '正在读取案例数据...';
+    const manifest = await fetchJson(`http://localhost:5000/api/showcase/${caseId}/manifest`) as ShowcaseManifest;
+    if (!manifest.success) {
+      throw new Error(manifest.message || '案例清单读取失败');
+    }
+
+    const ascText = await fetchText(`${manifest.fileBaseUrl}/${encodeFileName(manifest.ascFile)}`);
+    const bounds = prepareFloodScene(ascText, manifest.utmZone, manifest.name);
+
+    const xmlText = await fetchText(`${manifest.fileBaseUrl}/${encodeFileName(manifest.xmlFile)}`);
+    const floodUrls = parseFloodUrlsFromXml(xmlText);
+    if (floodUrls.length === 0) {
+      throw new Error('案例 XML 中没有有效洪水帧');
+    }
+
+    const playbackOptions = getShowcasePlaybackOptions(caseId);
+    coordMessage.value = `正在缓冲 ${manifest.name}：共 ${floodUrls.length} 帧`;
+    const firstPrimitive = await renderPrefetchedFloodFrames(token, floodUrls, (url) => (
+      fetchJson(`${manifest.fileBaseUrl}/${encodeFileName(url)}`)
+    ), playbackOptions);
+
+    if (isPlaybackCurrent(token)) {
+      flyToFirstPrimitive(firstPrimitive, bounds);
+      coordMessage.value = `${manifest.name} 播放完成：共 ${floodUrls.length} 帧`;
+    }
+  } catch (error) {
+    console.error("Error loading showcase flood data:", error);
+    if (isPlaybackCurrent(token)) {
+      coordMessage.value = error instanceof Error ? error.message : '案例数据加载失败';
+    }
+  } finally {
+    if (isPlaybackCurrent(token)) {
+      isLoading.value = false;
+    }
+  }
+};
+
+defineExpose({ playShowcase, resetFloodData });
 </script>
 
 <template>
   <div class="flood-controller">
     <label class="control-label">上传 ASC 文件</label>
-    <input type="file" accept=".asc,.txt" @change="handleAscFileChange">
+    <StyledFileInput accept=".asc,.txt" button-text="选择 ASC" placeholder="未选择 ASC 文件" @change="handleAscFileChange" />
 
     <label class="control-label">输入投影带号（1-60）</label>
     <input v-model.number="utmZone" type="number" min="1" max="60">
@@ -296,7 +503,7 @@ const loadFloodData = async () => {
     <input :value="parsedCellsize ?? ''" type="number" readonly placeholder="未读取">
 
     <label class="control-label">选择洪水数据目录</label>
-    <input type="file" webkitdirectory directory @change="handleFloodDirChange">
+    <StyledFileInput directory button-text="选择目录" placeholder="未选择洪水数据目录" @change="handleFloodDirChange" />
 
     <p v-if="coordMessage" class="coord-message">{{ coordMessage }}</p>
 
@@ -319,7 +526,6 @@ const loadFloodData = async () => {
   font-size: 12px;
 }
 
-input[type="file"],
 input[type="number"] {
   color: white;
   background-color: #0f2439;
