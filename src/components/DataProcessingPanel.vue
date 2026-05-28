@@ -5,12 +5,10 @@ import FloodLoader from './FloodLoader.vue';
 import StyledFileInput from './StyledFileInput.vue';
 
 const props = defineProps<{
-  isSimulating?: boolean;
   viewer?: Cesium.Viewer | null;
 }>();
 
 const emit = defineEmits<{
-  (e: 'start-simulation'): void;
   (e: 'menu-select', id: string): void;
 }>();
 
@@ -144,7 +142,7 @@ const menuItems = ref<MenuGroup[]>([
     children: [
       { id: 'tif2asc', name: '格式转换' },
       { id: 'roughness', name: '粗糙度计算' },
-      { id: 'rowcol', name: '获取 ASC 行列号' },
+      { id: 'rowcol', name: '获取行列号' },
       { id: 'draw', name: '地形工具' }
     ]
   },
@@ -152,7 +150,7 @@ const menuItems = ref<MenuGroup[]>([
     name: '模拟',
     expanded: true,
     children: [
-      { id: 'params', name: '输出水深与json' },
+      { id: 'params', name: '输出水深数据' },
       { id: 'run', name: '水深转json' }
     ]
   },
@@ -193,10 +191,6 @@ const getActiveItemName = () => {
     }
   }
   return '';
-};
-
-const handleStartClick = () => {
-  emit('start-simulation');
 };
 
 const fetchAndDisplayTiffBounds = async (file: File) => {
@@ -702,15 +696,6 @@ onMounted(async () => {
               {{ child.name }}
             </div>
 
-            <div v-if="item.name === '模拟'">
-              <div
-                class="menu-item"
-                :style="{ cursor: props.isSimulating ? 'not-allowed' : 'pointer', opacity: props.isSimulating ? 0.7 : 1 }"
-                @click="!props.isSimulating && handleStartClick()"
-              >
-                {{ props.isSimulating ? '模拟中...' : '开始模拟' }}
-              </div>
-            </div>
           </div>
         </div>
       </div>
@@ -780,7 +765,7 @@ onMounted(async () => {
       </div>
 
       <div v-show="activeItem === 'rowcol'" class="tool-block">
-        <h5>3. 根据坐标获取 ASCII 行列号</h5>
+        <h5>3. 根据坐标获取溃口行列号</h5>
         <form id="getAsciiValueForm" enctype="multipart/form-data" @submit.prevent="handleRowcolSubmit">
           <div class="form-group">
             <label class="form-label" for="asciiFile">选择 ASCII 文件</label>

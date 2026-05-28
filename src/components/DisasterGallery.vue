@@ -83,7 +83,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 
-type ShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao';
+type ShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
 
 const emit = defineEmits<{
   showcase: [caseId: ShowcaseCaseId];
@@ -92,9 +92,17 @@ const emit = defineEmits<{
 // 导入本地图片
 import imgXiaojiaqiao from '../案例图片/肖家桥.png';
 import imgJinsha from '../案例图片/金沙江.png';
+// import imgBonn from '../案例图片/德国波恩.png'; // 提示：请补充图片后取消注释
 
 // 原始数据源
 const cases = ref([
+  {
+    id: 'bonn',
+    title: '德国波恩',
+    img: imgJinsha, // 提示：暂时使用金沙江图片占位，有了图片后请换成 imgBonn
+    desc: '位于莱茵河畔的德国波恩（Bonn）曾经历极端暴雨引发的城市内涝与洪水。本案例结合高分辨率城市DEM及实体建筑模型信息，通过精细化的网格动态计算，推演城市建筑密集区内复杂的地表水汇聚、演进与积水过程，为城市应急防涝提供决策支持。',
+    tags: ['城市内涝', '暴雨洪涝', '三维淹没', 'SHOWCASE']
+  },
   {
     id: 'xiaojiaqiao',
     title: '肖家桥',
@@ -152,8 +160,8 @@ const selectTag = (tag: string) => {
 };
 
 const emitShowcase = (caseId: string) => {
-  if (caseId === 'jinshajiang' || caseId === 'xiaojiaqiao') {
-    emit('showcase', caseId);
+  if (caseId === 'jinshajiang' || caseId === 'xiaojiaqiao' || caseId === 'bonn') {
+    emit('showcase', caseId as ShowcaseCaseId);
   }
 };
 </script>
@@ -328,7 +336,7 @@ const emitShowcase = (caseId: string) => {
   border: 1px solid var(--sys-border-color-light);
   border-radius: 10px;
   overflow: hidden;
-  height: 190px;
+  min-height: 190px;
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   cursor: pointer;
 }
@@ -405,13 +413,13 @@ const emitShowcase = (caseId: string) => {
 .card-desc {
   color: #b8d5ea;
   font-size: 13px;
-  line-height: 1.7;
+  line-height: 1.6;
   margin: 0 0 16px 0;
-  flex-grow: 1;
   display: -webkit-box;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 4;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* 标签样式 */
@@ -419,6 +427,7 @@ const emitShowcase = (caseId: string) => {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  margin-top: auto;
 }
 
 .tag {

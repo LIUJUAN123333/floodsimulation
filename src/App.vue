@@ -3,14 +3,19 @@ import { ref } from 'vue';
 import { EllipsoidTerrainProvider, createWorldTerrainAsync } from 'cesium';
 
 import CesiumViewer from './components/CesiumViewer.vue';
+import BasicFunctionsPanel from './components/BasicFunctionsPanel.vue';
 import DataProcessingPanel from './components/DataProcessingPanel.vue';
 import FloodAreaCalculator from './components/FloodAreaCalculator.vue';
 import FloodLoader from './components/FloodLoader.vue';
+import HelpPanel from './components/HelpPanel.vue';
+import MonitoringPanel from './components/MonitoringPanel.vue';
+import ProjectIntroPanel from './components/ProjectIntroPanel.vue';
 import { lastLoadedFloodJson, floodCellSize, currentFloodPrimitive, floodPlaybackToken } from './store/floodState';
 
 import LoadingScreen from './disaster-template/components/LoadingScreen.vue';
 import TopBar from './disaster-template/components/TopBar.vue';
 import LogoOverlay from './disaster-template/components/LogoOverlay.vue';
+import FpsWidget from './components/FpsWidget.vue';
 // 加回模板右侧的科技感面板
 import TemplatePanel from './disaster-template/components/TemplatePanel.vue';
 import DisasterGallery from './components/DisasterGallery.vue';
@@ -80,7 +85,7 @@ const onViewerReady = (readyViewer: any) => {
   isMapReady.value = true;
 };
 
-const toggleTerrain = async () => {
+const toggleTerrain = async (_event?: Event) => {
   if (!viewer.value || terrainSwitching.value) return;
   terrainSwitching.value = true;
   try {
@@ -99,8 +104,6 @@ const toggleTerrain = async () => {
   }
 };
 
-const isSimulating = ref(false);
-const onStartSimulation = () => { isSimulating.value = true; };
 const onMenuSelect = (_id: string) => {};
 
 type ShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao';
@@ -130,7 +133,6 @@ const resetFloodScene = () => {
 
   lastLoadedFloodJson.value = null;
   floodCellSize.value = 0;
-  isSimulating.value = false;
   panelVisible.value = false;
   showV0226CPanels.value = false;
   activePanelId.value = '';
@@ -156,6 +158,8 @@ const onFlyComplete = () => { showUI.value = true; };
 
 <template>
   <div class="main-container">
+    <FpsWidget mode="fixed" />
+
     <LoadingScreen :is-ready="isMapReady" :system-title="systemTitle" @loading-complete="onLoadingComplete" />
     
     <transition name="fade-top">
@@ -166,9 +170,25 @@ const onFlyComplete = () => { showUI.value = true; };
     <FloodLoader v-if="viewer" ref="floodLoaderRef" class="showcase-flood-loader" :viewer="viewer" />
     
     <transition name="fade-bottom">
-      <button v-show="showUI" class="terrain-toggle-btn" :disabled="!viewer || terrainSwitching" @click="toggleTerrain">
-        {{ terrainSwitching ? '切换中...' : (terrainEnabled ? '关闭地形' : '打开地形') }}
-      </button>
+      <div v-show="showUI" class="bottom-overlay">
+        <div class="left-section">
+          <label
+            class="terrain-switch"
+            :class="{ disabled: !viewer || terrainSwitching }"
+            title="地形层"
+            @click.stop
+          >
+            <input
+              type="checkbox"
+              :checked="terrainEnabled"
+              :disabled="!viewer || terrainSwitching"
+              @change="toggleTerrain"
+            />
+            <span class="slider"></span>
+            <span class="switch-text">{{ terrainSwitching ? '切换中' : '地形层' }}</span>
+          </label>
+        </div>
+      </div>
     </transition>
 
     <!-- 只保留洪水结果小窗口 -->
@@ -181,15 +201,30 @@ const onFlyComplete = () => { showUI.value = true; };
     <!-- 2. 灾害模板右侧的高级展示面板 (与TopBar联动) -->
     <transition name="fade-right">
       <TemplatePanel
-        v-show="showUI && panelVisible && activePanelId !== 'demo'"
+        v-show="showUI && panelVisible && activePanelId !== 'demo' && activePanelId !== 'basic'"
+        :class="{
+          'monitor-panel-shell': activePanelId === 'monitor',
+          'info-panel-shell': activePanelId === 'intro' || activePanelId === 'help'
+        }"
         side="right"
         :title="panelTitle"
         :subtitle="panelSubtitle"
       >
         <template v-if="showV0226CPanels">
-          <DataProcessingPanel :viewer="viewer" :is-simulating="isSimulating" @start-simulation="onStartSimulation" @menu-select="onMenuSelect" />
+          <DataProcessingPanel :viewer="viewer" @menu-select="onMenuSelect" />
         </template>
+        <ProjectIntroPanel v-else-if="activePanelId === 'intro'" />
+        <MonitoringPanel v-else-if="activePanelId === 'monitor'" />
+        <HelpPanel v-else-if="activePanelId === 'help'" />
       </TemplatePanel>
+    </transition>
+
+    <!-- 基础功能：按迁移文档改为右侧图标工具栏 -->
+    <transition name="fade-right">
+      <BasicFunctionsPanel
+        v-if="showUI && activePanelId === 'basic'"
+        :cesium-viewer-ref="cesiumViewerRef"
+      />
     </transition>
 
     <!-- 独立的案例演示大面板 -->
@@ -221,22 +256,81 @@ html, body, #app { width: 100%; height: 100%; margin: 0; }
 body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; background: #000; }
 .main-container { width: 100vw; height: 100vh; overflow: hidden; position: relative; background: radial-gradient(circle at 50% 20%, rgba(0, 229, 255, 0.08), transparent 30%), linear-gradient(180deg, #04070f 0%, #000 100%); }
 
-.terrain-toggle-btn {
+.bottom-overlay {
   position: absolute;
-  bottom: 20px;
-  left: 20px;
+  bottom: 0;
+  left: 0;
+  width: 100%;
+  height: 40px;
+  background: transparent;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 20px;
   z-index: 1001;
-  padding: 8px 12px;
-  border: 1px solid var(--sys-border-color);
-  border-radius: 6px;
-  background-color: var(--sys-glass-bg);
-  color: #fff;
-  cursor: pointer;
-  box-shadow: inset 0 0 10px var(--sys-border-color-light);
-  transition: all 0.3s ease;
+  pointer-events: none;
 }
-.terrain-toggle-btn:hover { background-color: rgba(0, 229, 255, 0.2); }
-.terrain-toggle-btn:disabled { opacity: 0.7; cursor: not-allowed; }
+
+.left-section {
+  display: flex;
+  align-items: center;
+  pointer-events: auto;
+}
+
+.terrain-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.terrain-switch.disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.terrain-switch input {
+  display: none;
+}
+
+.slider {
+  position: relative;
+  width: 38px;
+  height: 20px;
+  background-color: rgba(255, 255, 255, 0.2);
+  border-radius: 20px;
+  transition: 0.3s;
+  box-shadow: inset 0 0 5px rgba(0, 0, 0, 0.5);
+}
+
+.slider::before {
+  position: absolute;
+  content: "";
+  height: 14px;
+  width: 14px;
+  left: 3px;
+  bottom: 3px;
+  background-color: #fff;
+  transition: 0.3s;
+  border-radius: 50%;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.3);
+}
+
+.terrain-switch input:checked + .slider {
+  background-color: var(--sys-theme-color, #00e5ff);
+  box-shadow: 0 0 8px rgba(0, 229, 255, 0.4);
+}
+
+.terrain-switch input:checked + .slider::before {
+  transform: translateX(18px);
+}
+
+.switch-text {
+  color: #8be1ff;
+  font-size: 13px;
+  font-weight: 500;
+  user-select: none;
+}
 
 .v0226c-panels { position: absolute; inset: 0; pointer-events: none; z-index: 100; }
 .v0226c-panels > * { pointer-events: auto; }
@@ -260,6 +354,29 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
   opacity: 0;
   pointer-events: none;
   overflow: hidden;
+}
+
+.monitor-panel-shell {
+  bottom: 140px;
+  max-height: none;
+  overflow: hidden;
+}
+
+.monitor-panel-shell .panel-content {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.info-panel-shell {
+  width: 900px !important;
+  max-width: calc(100vw - 40px) !important;
+  max-height: calc(100vh - 150px) !important;
+  overflow: hidden;
+}
+
+.info-panel-shell .panel-content {
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .fade-top-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1); }
