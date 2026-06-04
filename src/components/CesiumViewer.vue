@@ -1,10 +1,20 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue';
 import * as Cesium from 'cesium';
-import { Viewer, Cartesian3, createWorldTerrainAsync, EllipsoidTerrainProvider, Ion, ScreenSpaceEventHandler, ScreenSpaceEventType, Cartographic, Math as CesiumMath } from 'cesium';
+import {
+  Viewer,
+  Cartesian3,
+  createWorldTerrainAsync,
+  EllipsoidTerrainProvider,
+  Ion,
+  ScreenSpaceEventHandler,
+  ScreenSpaceEventType,
+  Cartographic,
+  Math as CesiumMath
+} from 'cesium';
 
 // 配置你申请到的 Cesium Ion Token
-Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJmMmQ4ZGIxOS0yOGIwLTQ4NDEtYTQ0MC1mYzUzNjEzYWVhOWEiLCJpZCI6MjQ1NzQxLCJpYXQiOjE3NzcwMTU4NDZ9.Ujdg5KDx6BmJdE70VPX-dhya_4r_xejd8LDibUuwwPY';
+Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIyZmNiZjM4NS03MDZmLTQzNTUtOWIwYS1iNzAxYzU0NjFkNzQiLCJpZCI6MzQzMDgzLCJpYXQiOjE3NTgzNzA4NDl9.AqR4eRVi5bNqIptxtsP6wq4LhgBUawcdVkxW_L9iuJk';
 
 const cesiumContainer = ref<HTMLElement | null>(null);
 let viewer: Viewer | null = null;
@@ -56,6 +66,8 @@ onMounted(async () => {
     viewer.camera.setView({
       destination: Cartesian3.fromDegrees(104.06, 30.67, 25000000),
     });
+
+    viewer.scene.globe.depthTestAgainstTerrain = true;
 
     handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction((movement: any) => {

@@ -33,8 +33,27 @@ SHOWCASE_CASES = {
         'name': '金沙江',
         'directory': os.path.join(SHOWCASE_ROOT, 'jinshajiang'),
         'utm_zone': 47,
-        'asc_file': 'dem (7).asc',
-        'xml_file': 'Flood_New.xml'
+        'asc_file': None,
+        'xml_file': 'Flood_New.xml',
+        'json_base_dir': '',
+        'center': {
+            'lon': 98.6877608534,
+            'lat': 31.0793427182,
+            'height': 0
+        },
+        # 无 ASC 案例使用局部原点锚点；这里按米调整锚点：east 向东，north 向北，up 向上。
+        'anchor_offset': {
+            'east': 1450,
+            'north': -350,
+            'up': 0
+        },
+        'camera_center': {
+            'lon': 98.751219,
+            'lat': 31.042324,
+            'height': 30000
+        },
+        'heading_offset_degrees': 0,
+        'cell_size': 20
     },
     'xiaojiaqiao': {
         'name': '肖家桥',
@@ -42,6 +61,29 @@ SHOWCASE_CASES = {
         'utm_zone': 48,
         'asc_file': 'CCC (1).asc',
         'xml_file': 'Flood_New.xml'
+    },
+    'bonn': {
+        'name': '德国波恩',
+        'directory': os.path.join(SHOWCASE_ROOT, 'Bonn'),
+        'utm_zone': 32,
+        'asc_file': None,
+        'xml_file': 'Flood_New.xml',
+        'json_base_dir': '',
+        # Flood1 与 Flood481 是该批波恩数据中的异常帧：首帧接近最大淹没、末帧又突然回落。
+        # 案例演示按连续演进段 Flood2-Flood480 播放，避免开头/结尾突跳。
+        'exclude_flood_files': {'flood1.json', 'flood481.json'},
+        'center': {
+            'lon': 7.0982,
+            'lat': 50.7374,
+            'height': 0
+        },
+        'anchor_offset': {
+            'east': 0,
+            'north': 0,
+            'up': 0
+        },
+        'heading_offset_degrees': 0,
+        'cell_size': 20
     }
 }
 SHOWCASE_ALLOWED_EXTENSIONS = {'.asc', '.xml', '.json'}
@@ -60,8 +102,12 @@ def get_showcase_case(case_id):
 
 
 def get_showcase_file_path(case_config, filename):
+    if not filename:
+        return None
+
     normalized_filename = filename.replace('\\', '/')
-    if '/' in normalized_filename or normalized_filename in ('', '.', '..'):
+    path_parts = normalized_filename.split('/')
+    if normalized_filename in ('', '.', '..') or any(part in ('', '.', '..') for part in path_parts):
         return None
 
     extension = os.path.splitext(normalized_filename)[1].lower()
@@ -86,25 +132,132 @@ def count_showcase_frames(xml_path):
         return 0
 
 
+def get_showcase_xml_urls(xml_path):
+    try:
+        tree = ET.parse(xml_path)
+        urls = []
+        for flood in tree.getroot().findall('.//flood'):
+            url = flood.get('url')
+            if url:
+                urls.append(url)
+        return urls
+    except Exception:
+        return []
+
+
+def get_existing_showcase_flood_urls(case_config, xml_path):
+    return [entry['url'] for entry in get_existing_showcase_flood_entries(case_config, xml_path)]
+
+
+def get_existing_showcase_flood_entries(case_config, xml_path):
+    xml_dir = os.path.dirname(case_config['xml_file']).replace('\\', '/')
+    json_base_dir = case_config.get('json_base_dir', xml_dir)
+    excluded_flood_files = {
+        filename.lower()
+        for filename in case_config.get('exclude_flood_files', set())
+    }
+    existing_entries = []
+
+    for url in get_showcase_xml_urls(xml_path):
+        normalized_url = url.replace('\\', '/').lstrip('/')
+        if not normalized_url:
+            continue
+        if os.path.basename(normalized_url).lower() in excluded_flood_files:
+            continue
+
+        if '/' in normalized_url or not json_base_dir:
+            relative_path = normalized_url
+        else:
+            relative_path = f"{json_base_dir.rstrip('/')}/{normalized_url}"
+
+        file_path = get_showcase_file_path(case_config, relative_path)
+        if file_path:
+            existing_entries.append({
+                'url': url,
+                'size': os.path.getsize(file_path)
+            })
+
+    return existing_entries
+
+
+def get_showcase_anchor_offset(case_config):
+    configured_offset = case_config.get('anchor_offset') or {}
+
+    def parse_offset(name, fallback):
+        value = request.args.get(name)
+        if value is None:
+            return fallback
+        try:
+            return float(value)
+        except ValueError:
+            return fallback
+
+    return {
+        'east': parse_offset('dx', float(configured_offset.get('east', 0))),
+        'north': parse_offset('dy', float(configured_offset.get('north', 0))),
+        'up': parse_offset('dz', float(configured_offset.get('up', 0)))
+    }
+
+
+def get_showcase_heading_offset(case_config):
+    value = request.args.get('heading')
+    if value is not None:
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    return float(case_config.get('heading_offset_degrees', 0))
+
+
 @app.route('/api/showcase/<case_id>/manifest', methods=['GET'])
 def get_showcase_manifest(case_id):
     case_config, error_response, status_code = get_showcase_case(case_id)
     if error_response:
         return error_response, status_code
 
-    asc_path = get_showcase_file_path(case_config, case_config['asc_file'])
+    asc_file = case_config.get('asc_file')
+    asc_path = get_showcase_file_path(case_config, asc_file) if asc_file else None
     xml_path = get_showcase_file_path(case_config, case_config['xml_file'])
-    if not asc_path or not xml_path:
+    if (asc_file and not asc_path) or not xml_path:
         return jsonify({'success': False, 'message': '案例 ASC 或 XML 文件不存在'}), 404
+
+    xml_dir = os.path.dirname(case_config['xml_file']).replace('\\', '/')
+    flood_entries = get_existing_showcase_flood_entries(case_config, xml_path)
+    flood_urls = [entry['url'] for entry in flood_entries]
+    flood_frame_sizes = [entry['size'] for entry in flood_entries]
+    xml_frame_count = count_showcase_frames(xml_path)
+    excluded_flood_files = {
+        filename.lower()
+        for filename in case_config.get('exclude_flood_files', set())
+    }
+    excluded_json_count = sum(
+        1
+        for url in get_showcase_xml_urls(xml_path)
+        if os.path.basename(url.replace('\\', '/').lstrip('/')).lower() in excluded_flood_files
+    )
 
     return jsonify({
         'success': True,
         'caseId': case_id,
         'name': case_config['name'],
         'utmZone': case_config['utm_zone'],
-        'ascFile': case_config['asc_file'],
+        'ascFile': asc_file,
         'xmlFile': case_config['xml_file'],
-        'jsonCount': count_showcase_frames(xml_path),
+        'xmlDir': xml_dir,
+        'jsonBaseDir': case_config.get('json_base_dir', xml_dir),
+        'center': case_config.get('center'),
+        'cameraCenter': case_config.get('camera_center'),
+        'anchorOffset': get_showcase_anchor_offset(case_config),
+        'headingOffsetDegrees': get_showcase_heading_offset(case_config),
+        'cellSize': case_config.get('cell_size'),
+        'jsonCount': len(flood_urls),
+        'xmlJsonCount': xml_frame_count,
+        'missingJsonCount': max(xml_frame_count - len(flood_urls) - excluded_json_count, 0),
+        'excludedJsonCount': excluded_json_count,
+        'floodUrls': flood_urls,
+        'floodFrameSizes': flood_frame_sizes,
+        'totalJsonBytes': sum(flood_frame_sizes),
+        'maxJsonBytes': max(flood_frame_sizes, default=0),
         'fileBaseUrl': f"{request.host_url.rstrip('/')}/api/showcase/{case_id}/file"
     })
 
@@ -119,7 +272,9 @@ def get_showcase_file(case_id, filename):
     if not file_path:
         return jsonify({'success': False, 'message': '文件不存在或不允许访问'}), 404
 
-    return send_from_directory(case_config['directory'], os.path.basename(file_path))
+    response = send_file(file_path, conditional=True, max_age=3600)
+    response.headers['Cache-Control'] = 'public, max-age=3600'
+    return response
 
 # 辅助函数：清理临时文件
 def cleanup_file(file_path):

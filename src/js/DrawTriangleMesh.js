@@ -12,6 +12,7 @@ import MultiColorTriangleAppearance from './Plugin/MultiColorTriangleAppearance.
     var floodCenterPosition=null;
     var modelMatrix=null;
     var gridCellSize=20;
+    var headingOffsetRadians=0;
     
     var DrawTriangleMesh=function (json){
 
@@ -80,10 +81,10 @@ import MultiColorTriangleAppearance from './Plugin/MultiColorTriangleAppearance.
         var Transforms=Cesium.Transforms;
         var Ellipsoid=Cesium.Ellipsoid;
         var HeadingPitchRoll=Cesium.HeadingPitchRoll;
-        var hpRoll = new HeadingPitchRoll(Cesium.Math.PI_OVER_TWO,0.0,0.0);
+        var hpRoll = new HeadingPitchRoll(Cesium.Math.PI_OVER_TWO + headingOffsetRadians,0.0,0.0);
        // var hpRoll = new HeadingPitchRoll(Cesium.Math.PI_OVER_TWO+0.002,0.001,0.0002); //此处是用于调整Bonn洪水的方向
         // var hpRoll = new HeadingPitchRoll(Cesium.Math.PI_OVER_TWO+0.001,0.0,0.0);
-        var modelMatrix=Transforms.headingPitchRollToFixedFrame(floodCenterPosition, hpRoll, Ellipsoid.WGS84, Transforms.eastNorthUpToFixedFrame);
+        modelMatrix=Transforms.headingPitchRollToFixedFrame(floodCenterPosition, hpRoll, Ellipsoid.WGS84, Transforms.eastNorthUpToFixedFrame);
        // var modelMatrix = Cesium.Transforms.headingPitchRollToFixedFrame(floodCenterPosition, heading, pitch, roll)
 
 
@@ -155,5 +156,32 @@ import MultiColorTriangleAppearance from './Plugin/MultiColorTriangleAppearance.
         if(typeof size==='number' && isFinite(size) && size>0){
             gridCellSize=size;
         }
+    };
+
+    DrawTriangleMesh.setHeadingOffsetDegrees=function (degrees){
+        if(typeof degrees==='number' && isFinite(degrees)){
+            headingOffsetRadians=Cesium.Math.toRadians(degrees);
+        }
+    };
+
+    DrawTriangleMesh.getCurrentModelMatrix=function (){
+        return modelMatrix ? Cesium.Matrix4.clone(modelMatrix, new Cesium.Matrix4()) : null;
+    };
+
+    DrawTriangleMesh.worldToFloodGrid=function (position){
+        if(!position || !modelMatrix || !(gridCellSize>0)){
+            return null;
+        }
+
+        var inverseMatrix = Cesium.Matrix4.inverse(modelMatrix, new Cesium.Matrix4());
+        var localPosition = Cesium.Matrix4.multiplyByPoint(inverseMatrix, position, new Cesium.Cartesian3());
+        return {
+            x: localPosition.x / gridCellSize,
+            y: localPosition.y / gridCellSize,
+            z: localPosition.z,
+            localX: localPosition.x,
+            localY: localPosition.y,
+            cellSize: gridCellSize
+        };
     };
    export default DrawTriangleMesh;

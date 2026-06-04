@@ -1,16 +1,27 @@
 ﻿<script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { EllipsoidTerrainProvider, createWorldTerrainAsync } from 'cesium';
 
 import CesiumViewer from './components/CesiumViewer.vue';
 import BasicFunctionsPanel from './components/BasicFunctionsPanel.vue';
 import DataProcessingPanel from './components/DataProcessingPanel.vue';
+import FloodAnalysisPanel from './components/FloodAnalysisPanel.vue';
 import FloodAreaCalculator from './components/FloodAreaCalculator.vue';
 import FloodLoader from './components/FloodLoader.vue';
 import HelpPanel from './components/HelpPanel.vue';
 import MonitoringPanel from './components/MonitoringPanel.vue';
 import ProjectIntroPanel from './components/ProjectIntroPanel.vue';
-import { lastLoadedFloodJson, floodCellSize, currentFloodPrimitive, floodPlaybackToken } from './store/floodState';
+import RainstormEffect from './components/RainstormEffect.vue';
+import RiverRunoffEffect from './components/RiverRunoffEffect.vue';
+import SceneEffectsPanel from './components/SceneEffectsPanel.vue';
+import {
+  lastLoadedFloodJson,
+  floodCellSize,
+  currentFloodPrimitive,
+  floodPlaybackToken,
+  clearFloodDepthMonitorPoint,
+  resetFloodAreaSeries
+} from './store/floodState';
 
 import LoadingScreen from './disaster-template/components/LoadingScreen.vue';
 import TopBar from './disaster-template/components/TopBar.vue';
@@ -25,6 +36,9 @@ const floodLoaderRef = ref<InstanceType<typeof FloodLoader> | null>(null);
 const viewer = ref<any>(null);
 const terrainEnabled = ref(true);
 const terrainSwitching = ref(false);
+const sceneEffectsPanelVisible = ref(false);
+const rainstormEnabled = ref(false);
+const riverRunoffEnabled = ref(false);
 
 const isMapReady = ref(false);
 const showUI = ref(false);
@@ -49,15 +63,19 @@ const panelContents: Record<string, string> = {
 
 let hideTimeout: number | undefined;
 
+const isStandalonePanelId = (id: string) => id === 'basic' || id === 'demo';
+const isStandalonePanelActive = computed(() => isStandalonePanelId(activePanelId.value));
+const sidePanelTransitionName = computed(() => (isStandalonePanelActive.value ? 'instant-panel' : 'fade-right'));
+
 const openPanel = (payload: { id: string; title: string }) => {
   clearTimeout(hideTimeout);
   
   // 如果再次点击当前的模块，就收起它
   if (activePanelId.value === payload.id && panelVisible.value) {
     panelVisible.value = false;
-    // 延迟销毁，防止由于 DOM 突然变化引起的“闪现默认占位框”现象
+    showV0226CPanels.value = false;
+    // 延迟清空当前模块，让离场动画能自然结束
     hideTimeout = window.setTimeout(() => {
-      showV0226CPanels.value = false;
       activePanelId.value = '';
     }, 400); // 对应 leave 动画的 0.4s
     return;
@@ -69,6 +87,9 @@ const openPanel = (payload: { id: string; title: string }) => {
   
   if (payload.id === 'simulation') {
     showV0226CPanels.value = true;
+    panelVisible.value = true;
+  } else if (isStandalonePanelId(payload.id)) {
+    showV0226CPanels.value = false;
     panelVisible.value = true;
   } else {
     // 切换到其它面板时也稍微延迟销毁复杂的组件
@@ -106,9 +127,29 @@ const toggleTerrain = async (_event?: Event) => {
 
 const onMenuSelect = (_id: string) => {};
 
-type ShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao';
+const toggleSceneEffectsPanel = () => {
+  sceneEffectsPanelVisible.value = !sceneEffectsPanelVisible.value;
+};
 
-const onShowcase = (caseId: ShowcaseCaseId) => {
+const toggleRainstorm = () => {
+  rainstormEnabled.value = !rainstormEnabled.value;
+};
+
+const toggleRiverRunoff = () => {
+  riverRunoffEnabled.value = !riverRunoffEnabled.value;
+};
+
+const onRiverRunoffComplete = () => {
+  if (!riverRunoffEnabled.value || !floodLoaderRef.value) {
+    return;
+  }
+  panelVisible.value = false;
+  floodLoaderRef.value.playShowcase('xiaojiaqiao');
+};
+
+type GalleryShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
+
+const onShowcase = (caseId: GalleryShowcaseCaseId) => {
   if (!floodLoaderRef.value) {
     console.warn('FloodLoader 尚未准备好');
     return;
@@ -133,11 +174,16 @@ const resetFloodScene = () => {
 
   lastLoadedFloodJson.value = null;
   floodCellSize.value = 0;
+  resetFloodAreaSeries();
+  clearFloodDepthMonitorPoint();
   panelVisible.value = false;
   showV0226CPanels.value = false;
   activePanelId.value = '';
   panelTitle.value = '';
   panelSubtitle.value = '';
+  sceneEffectsPanelVisible.value = false;
+  rainstormEnabled.value = false;
+  riverRunoffEnabled.value = false;
   showUI.value = true;
 
   if (cesiumViewerRef.value) {
@@ -168,6 +214,42 @@ const onFlyComplete = () => { showUI.value = true; };
     
     <CesiumViewer ref="cesiumViewerRef" @viewer-ready="onViewerReady" @fly-complete="onFlyComplete" />
     <FloodLoader v-if="viewer" ref="floodLoaderRef" class="showcase-flood-loader" :viewer="viewer" />
+    <RainstormEffect v-if="viewer" :viewer="viewer" :active="rainstormEnabled" />
+    <RiverRunoffEffect
+      v-if="viewer"
+      :viewer="viewer"
+      :active="riverRunoffEnabled"
+      @runoff-complete="onRiverRunoffComplete"
+    />
+
+    <transition name="scene-effects">
+      <div v-show="showUI" class="scene-effects-entry">
+        <button
+          type="button"
+          class="scene-effects-button"
+          :class="{ active: sceneEffectsPanelVisible || rainstormEnabled || riverRunoffEnabled }"
+          title="场景效果"
+          aria-label="场景效果"
+          @click="toggleSceneEffectsPanel"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden>
+            <path d="M7.5 14.5H17.2A3.3 3.3 0 0 0 17.6 8A5.4 5.4 0 0 0 7.1 9.4A2.6 2.6 0 0 0 7.5 14.5Z" />
+            <path d="M8 17.5L6.8 20M12 17.5L10.8 20M16 17.5L14.8 20" />
+          </svg>
+        </button>
+
+        <transition name="scene-effects-panel">
+          <SceneEffectsPanel
+            v-if="sceneEffectsPanelVisible"
+            class="scene-effects-flyout"
+            :rainstorm-enabled="rainstormEnabled"
+            :river-runoff-enabled="riverRunoffEnabled"
+            @toggle-rainstorm="toggleRainstorm"
+            @toggle-river-runoff="toggleRiverRunoff"
+          />
+        </transition>
+      </div>
+    </transition>
     
     <transition name="fade-bottom">
       <div v-show="showUI" class="bottom-overlay">
@@ -199,9 +281,9 @@ const onFlyComplete = () => { showUI.value = true; };
     </transition>
 
     <!-- 2. 灾害模板右侧的高级展示面板 (与TopBar联动) -->
-    <transition name="fade-right">
+    <transition :name="sidePanelTransitionName">
       <TemplatePanel
-        v-show="showUI && panelVisible && activePanelId !== 'demo' && activePanelId !== 'basic'"
+        v-show="showUI && panelVisible && !isStandalonePanelActive"
         :class="{
           'monitor-panel-shell': activePanelId === 'monitor',
           'info-panel-shell': activePanelId === 'intro' || activePanelId === 'help'
@@ -210,9 +292,10 @@ const onFlyComplete = () => { showUI.value = true; };
         :title="panelTitle"
         :subtitle="panelSubtitle"
       >
-        <template v-if="showV0226CPanels">
+        <template v-if="showV0226CPanels && activePanelId === 'simulation'">
           <DataProcessingPanel :viewer="viewer" @menu-select="onMenuSelect" />
         </template>
+        <FloodAnalysisPanel v-else-if="activePanelId === 'analysis'" :viewer="viewer" />
         <ProjectIntroPanel v-else-if="activePanelId === 'intro'" />
         <MonitoringPanel v-else-if="activePanelId === 'monitor'" />
         <HelpPanel v-else-if="activePanelId === 'help'" />
@@ -220,9 +303,9 @@ const onFlyComplete = () => { showUI.value = true; };
     </transition>
 
     <!-- 基础功能：按迁移文档改为右侧图标工具栏 -->
-    <transition name="fade-right">
+    <transition name="basic-tools">
       <BasicFunctionsPanel
-        v-if="showUI && activePanelId === 'basic'"
+        v-if="showUI && panelVisible && activePanelId === 'basic'"
         :cesium-viewer-ref="cesiumViewerRef"
       />
     </transition>
@@ -356,6 +439,73 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
   overflow: hidden;
 }
 
+.scene-effects-entry {
+  position: absolute;
+  top: 110px;
+  left: 82px;
+  z-index: 10030;
+  transform: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  pointer-events: auto;
+}
+
+.scene-effects-button {
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 4px solid rgba(23, 45, 87, 0.9);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9fb4cf;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(87, 105, 134, 0.45), transparent 64%),
+    linear-gradient(180deg, rgba(31, 48, 78, 0.96), rgba(18, 32, 61, 0.98));
+  box-shadow:
+    0 0 0 1px rgba(77, 107, 158, 0.46),
+    0 10px 24px rgba(0, 0, 0, 0.34),
+    inset 0 0 12px rgba(130, 175, 224, 0.08);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.scene-effects-button svg {
+  width: 28px;
+  height: 28px;
+}
+
+.scene-effects-button path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.scene-effects-button:hover,
+.scene-effects-button.active {
+  border-color: rgba(28, 58, 111, 0.96);
+  color: #dff8ff;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(0, 229, 255, 0.26), transparent 66%),
+    linear-gradient(180deg, rgba(35, 62, 101, 0.98), rgba(19, 39, 77, 0.98));
+  box-shadow:
+    0 0 0 1px rgba(0, 229, 255, 0.5),
+    0 0 22px rgba(0, 229, 255, 0.18),
+    0 10px 24px rgba(0, 0, 0, 0.34),
+    inset 0 0 16px rgba(0, 229, 255, 0.12);
+}
+
+.scene-effects-flyout {
+  position: absolute;
+  top: 0;
+  left: 60px;
+  transform: none;
+}
+
 .monitor-panel-shell {
   bottom: 140px;
   max-height: none;
@@ -390,6 +540,43 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 .fade-right-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1) 0.6s; }
 .fade-right-leave-active { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
 .fade-right-enter-from, .fade-right-leave-to { opacity: 0; transform: translateX(50px); }
+
+.instant-panel-enter-active,
+.instant-panel-leave-active {
+  transition: none !important;
+}
+
+.basic-tools-enter-active,
+.basic-tools-leave-active {
+  transition: all 0.18s ease;
+}
+.basic-tools-enter-from,
+.basic-tools-leave-to {
+  opacity: 0;
+  transform: translateX(18px);
+}
+
+.scene-effects-enter-active,
+.scene-effects-leave-active {
+  transition: all 0.28s ease;
+}
+
+.scene-effects-enter-from,
+.scene-effects-leave-to {
+  opacity: 0;
+  transform: translateX(-16px);
+}
+
+.scene-effects-panel-enter-active,
+.scene-effects-panel-leave-active {
+  transition: all 0.2s ease;
+}
+
+.scene-effects-panel-enter-from,
+.scene-effects-panel-leave-to {
+  opacity: 0;
+  transform: translateX(-14px);
+}
 
 .fade-bottom-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1) 0.9s; }
 .fade-bottom-leave-active { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }

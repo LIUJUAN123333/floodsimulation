@@ -19,6 +19,16 @@ declare namespace DrawTriangleMesh {
   function setFloodCenterPosition(position: Cesium.Cartesian3): void;
   function setFloodMatrx(matrix: Cesium.Matrix4): void;
   function setGridCellSize(size: number): void;
+  function setHeadingOffsetDegrees(degrees: number): void;
+  function getCurrentModelMatrix(): Cesium.Matrix4 | null;
+  function worldToFloodGrid(position: Cesium.Cartesian3): {
+    x: number;
+    y: number;
+    z: number;
+    localX: number;
+    localY: number;
+    cellSize: number;
+  } | null;
 }
 
 export default DrawTriangleMesh;
