@@ -32,8 +32,10 @@ type RiverSegment = {
   startRatio: number;
   peakRatio: number;
   positions: Cesium.Cartesian3[];
+  flowPositions: Cesium.Cartesian3[];
   activePositions: Cesium.Cartesian3[];
   center: Cesium.Cartesian3;
+  pulseEntity?: Cesium.Entity;
   flowEntity?: Cesium.Entity;
 };
 
@@ -49,8 +51,9 @@ const emit = defineEmits<{
 const RUNOFF_DURATION_MS = 9000;
 const FLOOD_TRIGGER_RATIO = 0.86;
 const FLOW_HEIGHT_M = 0;
-const BREACH_LON = 104.287821;
-const BREACH_LAT = 31.648853;
+const FLOW_LINE_HEIGHT_M = 30;
+const BREACH_LON = 104.288824;
+const BREACH_LAT = 31.648759;
 const MAX_RUNOFF_SEGMENTS = 1200;
 const RUNOFF_MASK_POLYGON: Array<[number, number]> = [
   [104.249689, 31.637028],
@@ -61,6 +64,7 @@ const RUNOFF_MASK_POLYGON: Array<[number, number]> = [
 const EXCLUDE_SOUTHEAST_OF_LON = 104.287837;
 const EXCLUDE_SOUTHEAST_OF_LAT = 31.648681;
 const breachPosition = Cesium.Cartesian3.fromDegrees(BREACH_LON, BREACH_LAT, FLOW_HEIGHT_M);
+const breachFlowPosition = Cesium.Cartesian3.fromDegrees(BREACH_LON, BREACH_LAT, FLOW_LINE_HEIGHT_M);
 const dataSourceName = 'xiaojiaqiao_river_runoff';
 const parsedRiverData = riverData as unknown as ArcGisRiverData;
 
@@ -77,6 +81,13 @@ const getSegmentCenter = (positions: Cesium.Cartesian3[]) => {
   positions.forEach((position) => Cesium.Cartesian3.add(center, position, center));
   return Cesium.Cartesian3.divideByScalar(center, Math.max(1, positions.length), center);
 };
+
+const raisePositions = (positions: Cesium.Cartesian3[], height: number) => (
+  positions.map((position) => {
+    const cartographic = Cesium.Cartographic.fromCartesian(position);
+    return Cesium.Cartesian3.fromRadians(cartographic.longitude, cartographic.latitude, height);
+  })
+);
 
 const getPathCenterLonLat = (path: ArcGisPoint[]) => {
   const sum = path.reduce((acc, [lon, lat]) => ({
@@ -151,6 +162,7 @@ const buildRiverSegments = (): RiverSegment[] => {
       const lastDistance = Cesium.Cartesian3.distance(positions[positions.length - 1], breachPosition);
       const flowPositions = firstDistance >= lastDistance ? positions : [...positions].reverse();
       const distanceToBreach = Cesium.Cartesian3.distance(getSegmentCenter(flowPositions), breachPosition);
+      const raisedFlowPositions = raisePositions(flowPositions, FLOW_LINE_HEIGHT_M);
       const centerLonLat = getPathCenterLonLat(chunk);
 
       return {
@@ -163,6 +175,7 @@ const buildRiverSegments = (): RiverSegment[] => {
         startRatio: 0,
         peakRatio: 0,
         positions: flowPositions,
+        flowPositions: raisedFlowPositions,
         activePositions: [flowPositions[0], flowPositions[0]],
         center: getSegmentCenter(flowPositions)
       };
@@ -274,11 +287,12 @@ const addBreachPulse = (segments: RiverSegment[]) => {
   }, null);
 
   const nearestRiverPosition = nearestSegment?.positions[nearestSegment.positions.length - 1] ?? breachPosition;
+  const nearestFlowPosition = raisePositions([nearestRiverPosition], FLOW_LINE_HEIGHT_M)[0];
   breachChannelEntity = riverDataSource.entities.add({
     polyline: {
-      positions: [nearestRiverPosition, breachPosition],
+      positions: [nearestFlowPosition, breachFlowPosition],
       width: 7,
-      clampToGround: true,
+      clampToGround: false,
       material: Cesium.Color.fromCssColorString('#e9ffff').withAlpha(0.98),
       show: false
     },
@@ -325,11 +339,21 @@ const createRunoffScene = async () => {
 
     // Flowing line
     const flowWidth = isMainStream ? 11 + streamLevel * 2 : 4 + streamLevel * 1.2;
+    segment.pulseEntity = riverDataSource?.entities.add({
+      polyline: {
+        positions: [segment.flowPositions[0], segment.flowPositions[0]],
+        width: flowWidth + 12,
+        clampToGround: false,
+        material: Cesium.Color.fromCssColorString('#00d9ff').withAlpha(0),
+        show: false
+      }
+    });
+
     segment.flowEntity = riverDataSource?.entities.add({
       polyline: {
-        positions: segment.activePositions,
+        positions: [segment.flowPositions[0], segment.flowPositions[0]],
         width: flowWidth,
-        clampToGround: true,
+        clampToGround: false,
         material: new Cesium.PolylineGlowMaterialProperty({
           glowPower: isMainStream ? 0.45 : 0.2,
           taperPower: 0.5,
@@ -338,6 +362,7 @@ const createRunoffScene = async () => {
         show: false
       }
     });
+
   });
 
   addBreachPulse(segments);
@@ -361,29 +386,69 @@ const createRunoffScene = async () => {
     segments.forEach((segment) => {
       const localProgress = (progress - segment.startRatio) / Math.max(0.001, segment.peakRatio - segment.startRatio);
       const shouldShow = localProgress > 0 && progress < 0.985;
+      const pulsePolyline = segment.pulseEntity?.polyline;
       const flowPolyline = segment.flowEntity?.polyline;
-      if (flowPolyline) {
-        // @ts-expect-error cesium properties can take values directly
-        flowPolyline.show = shouldShow;
-        // @ts-expect-error
-        flowPolyline.positions = getPartialPositions(segment.positions, localProgress);
+      const streamLevel = Math.max(1, segment.gridCode);
+      const flash = 0.5 + 0.5 * Math.sin(elapsed * 0.026 + segment.id * 0.41);
+      const partialPositions = getPartialPositions(segment.flowPositions, localProgress);
+
+      if (pulsePolyline) {
+        pulsePolyline.show = new Cesium.ConstantProperty(shouldShow);
+        pulsePolyline.positions = new Cesium.ConstantProperty(partialPositions);
+        pulsePolyline.width = new Cesium.ConstantProperty(
+          shouldShow ? 18 + streamLevel * 2.2 + flash * 12 : 1
+        );
+        pulsePolyline.material = new Cesium.ColorMaterialProperty(
+          Cesium.Color.fromCssColorString('#00d9ff').withAlpha(shouldShow ? 0.12 + flash * 0.34 : 0)
+        );
       }
+
+      if (flowPolyline) {
+        flowPolyline.show = new Cesium.ConstantProperty(shouldShow);
+        flowPolyline.positions = new Cesium.ConstantProperty(partialPositions);
+        flowPolyline.width = new Cesium.ConstantProperty(
+          shouldShow ? 9 + streamLevel * 2.2 + flash * 8 : 1
+        );
+        flowPolyline.material = new Cesium.PolylineGlowMaterialProperty({
+          glowPower: 0.38 + flash * 0.62,
+          taperPower: 0.28,
+          color: Cesium.Color.fromCssColorString(localProgress > 0.82 ? '#ffffff' : '#34eaff')
+            .withAlpha(shouldShow ? 0.78 + flash * 0.22 : 0)
+        });
+      }
+
     });
 
     if (breachChannelEntity?.polyline) {
-      // @ts-expect-error
-      breachChannelEntity.polyline.show = progress > 0.72;
-      // @ts-expect-error
-      breachChannelEntity.polyline.width = progress > 0.72 ? 7 + Math.sin(elapsed * 0.014) * 1.2 : 1;
+      const breachFlash = 0.5 + 0.5 * Math.sin(elapsed * 0.018);
+      breachChannelEntity.polyline.show = new Cesium.ConstantProperty(progress > 0.72);
+      breachChannelEntity.polyline.width = new Cesium.ConstantProperty(progress > 0.72 ? 14 + breachFlash * 14 : 1);
+      breachChannelEntity.polyline.material = new Cesium.PolylineGlowMaterialProperty({
+        glowPower: 0.48 + breachFlash * 0.58,
+        taperPower: 0.22,
+        color: Cesium.Color.fromCssColorString('#ffffff').withAlpha(0.82 + breachFlash * 0.18)
+      });
+    }
+
+    if (breachChannelEntity?.point) {
+      const breachFlash = 0.5 + 0.5 * Math.sin(elapsed * 0.022);
+      breachChannelEntity.point.pixelSize = new Cesium.ConstantProperty(14 + breachFlash * 18);
+      breachChannelEntity.point.color = new Cesium.ConstantProperty(
+        Cesium.Color.fromCssColorString('#ffffff').withAlpha(0.78 + breachFlash * 0.22)
+      );
+      breachChannelEntity.point.outlineColor = new Cesium.ConstantProperty(
+        Cesium.Color.fromCssColorString('#1de8ff').withAlpha(0.72 + breachFlash * 0.28)
+      );
     }
 
     if (outletEntity?.ellipse) {
       const bloom = Math.max(0, (progress - 0.68) / 0.32);
-      const radius = 260 + bloom * 3200;
+      const blink = 0.5 + 0.5 * Math.sin(elapsed * 0.02);
+      const radius = 420 + bloom * 3400 + blink * 980;
       outletEntity.ellipse.semiMajorAxis = new Cesium.ConstantProperty(radius);
       outletEntity.ellipse.semiMinorAxis = new Cesium.ConstantProperty(radius * 0.72);
       outletEntity.ellipse.material = new Cesium.ColorMaterialProperty(
-        Cesium.Color.fromCssColorString('#39d9ff').withAlpha(Math.max(0.08, 0.34 - bloom * 0.18))
+        Cesium.Color.fromCssColorString('#39d9ff').withAlpha(Math.max(0.12, 0.3 + blink * 0.34 - bloom * 0.1))
       );
     }
 

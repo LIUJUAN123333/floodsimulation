@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import * as Cesium from 'cesium';
 import DrawTriangleMesh from '../js/DrawTriangleMesh';
 import {
@@ -26,11 +26,33 @@ const PLOT_LEFT = 48;
 const PLOT_RIGHT = 270;
 const PLOT_TOP = 14;
 const PLOT_BOTTOM = 118;
-const BUILDING_FLOOD_THRESHOLD_M = 0.05;
-const BUILDING_AUTO_REFRESH_FRAME_STEP = 8;
-const FLOODED_BUILDING_COLOR = Cesium.Color.fromCssColorString('#ff4f5f').withAlpha(0.88);
-const SAFE_BUILDING_COLOR = Cesium.Color.fromCssColorString('#3be57f').withAlpha(0.74);
-const BUILDING_STYLE_GREEN = "color('#3be57f', 0.74)";
+const BUILDING_TILESET_URL = '/data/buildings/anxian_3D_Buildings/tileset.json';
+const BUILDING_FOOTPRINT_GEOJSON_URL = '/data/buildings/anxianbuildings/anxianbuildings.filtered.geojson';
+const BUILDING_TILESET_LABEL = '安县三维建筑';
+const BUILDING_HEIGHT_ABOVE_TERRAIN_M = 2;
+const BUILDING_MANUAL_HEIGHT_OFFSET_M = 0;
+const BUILDING_TERRAIN_RETRY_COUNT = 24;
+const BUILDING_DEBUG_SHOW_BOUNDING_VOLUME = false;
+const BUILDING_DEBUG_COLORIZE_TILES = false;
+const BUILDING_FOCUS_WEST = 104.336979;
+const BUILDING_FOCUS_EAST = 104.399494;
+const BUILDING_FOCUS_SOUTH = 31.577616;
+const BUILDING_FOCUS_NORTH = 31.639870;
+const BUILDING_FOCUS_LON = (BUILDING_FOCUS_WEST + BUILDING_FOCUS_EAST) / 2;
+const BUILDING_FOCUS_LAT = (BUILDING_FOCUS_SOUTH + BUILDING_FOCUS_NORTH) / 2;
+const BUILDING_FOCUS_RECTANGLE = Cesium.Rectangle.fromDegrees(
+  BUILDING_FOCUS_WEST,
+  BUILDING_FOCUS_SOUTH,
+  BUILDING_FOCUS_EAST,
+  BUILDING_FOCUS_NORTH
+);
+const BUILDING_TERRAIN_SAMPLE_POINTS = [
+  [BUILDING_FOCUS_LON, BUILDING_FOCUS_LAT],
+  [BUILDING_FOCUS_WEST, BUILDING_FOCUS_SOUTH],
+  [BUILDING_FOCUS_EAST, BUILDING_FOCUS_SOUTH],
+  [BUILDING_FOCUS_EAST, BUILDING_FOCUS_NORTH],
+  [BUILDING_FOCUS_WEST, BUILDING_FOCUS_NORTH]
+] as const;
 const makeSvgDataUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 const DEPTH_MARKER_PIN_IMAGE = makeSvgDataUrl(`
 <svg xmlns="http://www.w3.org/2000/svg" width="160" height="200" viewBox="0 0 160 200">
@@ -84,15 +106,29 @@ type BuildingStats = {
   safe: number;
 };
 
-type BuildingDepthSampler = {
-  gridX: number;
-  gridY: number;
-  mode: 'triangle' | 'nearest' | 'outside';
-  sampleVertices?: [number, number, number];
-  sampleWeights?: [number, number, number];
-  nearestIndex?: number;
-  meshVertexCount?: number;
-  meshFaceCount?: number;
+type BuildingTilesetJson = {
+  root?: {
+    transform?: number[];
+    boundingVolume?: {
+      box?: number[];
+    };
+  };
+};
+
+type BuildingFootprintGeometry = {
+  type: 'Polygon' | 'MultiPolygon';
+  coordinates: number[][][] | number[][][][];
+};
+
+type BuildingFootprintFeature = {
+  type: 'Feature';
+  geometry?: BuildingFootprintGeometry | null;
+  properties?: Record<string, unknown>;
+};
+
+type BuildingFootprintCollection = {
+  type: 'FeatureCollection';
+  features: BuildingFootprintFeature[];
 };
 
 const isPickingDepthPoint = ref(false);
@@ -100,20 +136,16 @@ const depthPickMessage = ref('');
 const buildingLayerLoading = ref(false);
 const buildingLayerShown = ref(false);
 const buildingLayerMessage = ref('');
-const buildingColorRevision = ref(0);
 const buildingStats = ref<BuildingStats>({ total: 0, flooded: 0, safe: 0 });
-const osmBuildingsTileset = ref<Cesium.Cesium3DTileset | null>(null);
+const buildingTileset = ref<Cesium.Cesium3DTileset | null>(null);
 let pickHandler: Cesium.ScreenSpaceEventHandler | null = null;
 let depthMarker: Cesium.Entity | null = null;
 let markerViewer: Cesium.Viewer | null = null;
 let buildingLayerViewer: Cesium.Viewer | null = null;
-let removeOsmTileVisibleListener: Cesium.Event.RemoveCallback | null = null;
-const buildingFeatureRevisions = new WeakMap<Cesium.Cesium3DTileFeature, number>();
-const buildingFeaturePositions = new WeakMap<Cesium.Cesium3DTileFeature, Cesium.Cartesian3 | null>();
-let buildingFeatureSamplers = new WeakMap<Cesium.Cesium3DTileFeature, BuildingDepthSampler>();
-let buildingContentRevisions = new WeakMap<object, number>();
-let lastBuildingRefreshFrame = -1;
+let previousDepthTestAgainstTerrain: boolean | null = null;
 let isPanelDisposed = false;
+let buildingTilesetSourceGroundHeight: number | null = null;
+let buildingAnalysisEntities: Cesium.Entity[] = [];
 
 const sortedAreaSeries = computed(() => (
   floodAreaSeries.value
@@ -313,7 +345,7 @@ const buildingLayerStatus = computed(() => {
     return '已显示';
   }
 
-  return osmBuildingsTileset.value ? '已隐藏' : '未加载';
+  return buildingTileset.value ? '已隐藏' : '未加载';
 });
 
 const buildingToggleLabel = computed(() => {
@@ -321,7 +353,7 @@ const buildingToggleLabel = computed(() => {
     return '加载中';
   }
 
-  if (!osmBuildingsTileset.value) {
+  if (!buildingTileset.value) {
     return '加载建筑';
   }
 
@@ -473,323 +505,312 @@ const clearDepthPoint = () => {
   depthPickMessage.value = '点位已清除';
 };
 
-const resetBuildingColorPass = (message?: string) => {
-  buildingColorRevision.value += 1;
-  buildingStats.value = { total: 0, flooded: 0, safe: 0 };
-
-  if (message) {
-    buildingLayerMessage.value = message;
+const refreshBuildingColors = () => {
+  if (!buildingTileset.value || !buildingLayerShown.value) {
+    return;
   }
 
-  props.viewer?.scene.requestRender();
+  void analyzeBuildingFlooding();
 };
 
-const resetBuildingSamplerCache = () => {
-  buildingFeatureSamplers = new WeakMap<Cesium.Cesium3DTileFeature, BuildingDepthSampler>();
-  buildingContentRevisions = new WeakMap<object, number>();
+const sleep = (durationMs = 0) => new Promise<void>((resolve) => {
+  window.setTimeout(resolve, durationMs);
+});
+
+const showBuildingLoadMessage = async (message: string) => {
+  buildingLayerMessage.value = message;
+  await nextTick();
+  await sleep(16);
 };
 
-const getFloodDepthArray = (jsonData: any): number[] | null => {
-  const depths = jsonData?.Depth?.[0];
-  return Array.isArray(depths) ? depths : null;
-};
-
-const getFloodFaceArray = (jsonData: any): number[] | null => {
-  const faces = jsonData?.Face;
-  return Array.isArray(faces) ? faces : null;
-};
-
-const parseNumber = (value: unknown) => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return value;
+const clearBuildingAnalysisEntities = (viewer = buildingLayerViewer ?? props.viewer) => {
+  if (!viewer || !buildingAnalysisEntities.length) {
+    buildingAnalysisEntities = [];
+    return;
   }
 
-  if (typeof value === 'string') {
-    const parsed = Number(value.trim());
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-
-  return null;
+  buildingAnalysisEntities.forEach((entity) => viewer.entities.remove(entity));
+  buildingAnalysisEntities = [];
+  viewer.scene.requestRender();
 };
 
-const getFeatureProperty = (feature: Cesium.Cesium3DTileFeature, propertyName: string) => {
-  const directValue = feature.getProperty(propertyName);
-  if (directValue !== undefined && directValue !== null) {
-    return directValue;
+const getPolygonRings = (geometry?: BuildingFootprintGeometry | null) => {
+  if (!geometry) {
+    return [];
   }
 
-  const content = (feature as unknown as { content?: Cesium.Cesium3DTileContent }).content;
-  if (!content || !Number.isFinite(feature.featureId)) {
-    return undefined;
+  if (geometry.type === 'Polygon') {
+    return [geometry.coordinates as number[][][]];
   }
 
-  return Cesium.Cesium3DTileFeature.getPropertyInherited(content, feature.featureId, propertyName);
+  if (geometry.type === 'MultiPolygon') {
+    return geometry.coordinates as number[][][][];
+  }
+
+  return [];
 };
 
-const getFeatureNumberProperty = (feature: Cesium.Cesium3DTileFeature, propertyNames: string[]) => {
-  for (const propertyName of propertyNames) {
-    const parsed = parseNumber(getFeatureProperty(feature, propertyName));
-    if (parsed !== null) {
-      return parsed;
+const getRingCentroid = (ring: number[][]) => {
+  let longitudeSum = 0;
+  let latitudeSum = 0;
+  let count = 0;
+
+  ring.forEach((coordinate) => {
+    const longitude = Number(coordinate[0]);
+    const latitude = Number(coordinate[1]);
+    if (Number.isFinite(longitude) && Number.isFinite(latitude)) {
+      longitudeSum += longitude;
+      latitudeSum += latitude;
+      count += 1;
     }
-  }
-
-  return null;
-};
-
-const normalizeLonLat = (lon: number, lat: number): [number, number] => {
-  if (Math.abs(lon) <= Math.PI && Math.abs(lat) <= Cesium.Math.PI_OVER_TWO) {
-    return [Cesium.Math.toDegrees(lon), Cesium.Math.toDegrees(lat)];
-  }
-
-  return [lon, lat];
-};
-
-const getFeatureLonLatPair = (feature: Cesium.Cesium3DTileFeature): [number, number] | null => {
-  const pairPropertyNames = ['cesium#cartographic', 'cartographic', 'coordinates', 'center', 'centroid'];
-
-  for (const propertyName of pairPropertyNames) {
-    const value = getFeatureProperty(feature, propertyName);
-    if (Array.isArray(value) && value.length >= 2) {
-      const lon = parseNumber(value[0]);
-      const lat = parseNumber(value[1]);
-      if (lon !== null && lat !== null) {
-        return normalizeLonLat(lon, lat);
-      }
-    }
-
-    if (value && typeof value === 'object') {
-      const record = value as Record<string, unknown>;
-      const lon = parseNumber(record.lon ?? record.longitude ?? record.x);
-      const lat = parseNumber(record.lat ?? record.latitude ?? record.y);
-      if (lon !== null && lat !== null) {
-        return normalizeLonLat(lon, lat);
-      }
-    }
-  }
-
-  const lon = getFeatureNumberProperty(feature, [
-    'cesium#longitude',
-    'longitude',
-    'lon',
-    'centerLon',
-    'center_lon',
-    'centerLongitude'
-  ]);
-  const lat = getFeatureNumberProperty(feature, [
-    'cesium#latitude',
-    'latitude',
-    'lat',
-    'centerLat',
-    'center_lat',
-    'centerLatitude'
-  ]);
-
-  if (lon === null || lat === null) {
-    return null;
-  }
-
-  return normalizeLonLat(lon, lat);
-};
-
-const getBuildingFeaturePosition = (
-  feature: Cesium.Cesium3DTileFeature,
-  fallbackPosition: Cesium.Cartesian3 | null
-) => {
-  const lonLat = getFeatureLonLatPair(feature);
-  if (lonLat) {
-    return Cesium.Cartesian3.fromDegrees(lonLat[0], lonLat[1], 0);
-  }
-
-  return fallbackPosition;
-};
-
-const calculateCachedBuildingDepth = (sampler: BuildingDepthSampler, jsonData: any) => {
-  if (sampler.mode === 'outside') {
-    return 0;
-  }
-
-  const depths = getFloodDepthArray(jsonData);
-  const faces = getFloodFaceArray(jsonData);
-  if (!depths || !faces) {
-    return null;
-  }
-
-  const canUseCachedSampler = (
-    sampler.meshVertexCount === depths.length &&
-    sampler.meshFaceCount === faces.length
-  );
-
-  if (
-    canUseCachedSampler &&
-    sampler.mode === 'triangle' &&
-    sampler.sampleVertices &&
-    sampler.sampleWeights
-  ) {
-    const [index0, index1, index2] = sampler.sampleVertices;
-    const [weight0, weight1, weight2] = sampler.sampleWeights;
-    const depth0 = Number(depths[index0]) || 0;
-    const depth1 = Number(depths[index1]) || 0;
-    const depth2 = Number(depths[index2]) || 0;
-    return Math.max(0, depth0 * weight0 + depth1 * weight1 + depth2 * weight2);
-  }
-
-  if (
-    canUseCachedSampler &&
-    sampler.mode === 'nearest' &&
-    typeof sampler.nearestIndex === 'number' &&
-    sampler.nearestIndex >= 0 &&
-    sampler.nearestIndex < depths.length
-  ) {
-    return Math.max(0, Number(depths[sampler.nearestIndex]) || 0);
-  }
-
-  return null;
-};
-
-const sampleBuildingDepth = (
-  feature: Cesium.Cesium3DTileFeature,
-  position: Cesium.Cartesian3 | null
-) => {
-  const jsonData = lastLoadedFloodJson.value;
-  if (!position || !jsonData) {
-    return 0;
-  }
-
-  const cachedSampler = buildingFeatureSamplers.get(feature);
-  if (cachedSampler) {
-    const cachedDepth = calculateCachedBuildingDepth(cachedSampler, jsonData);
-    if (cachedDepth !== null) {
-      return cachedDepth;
-    }
-  }
-
-  const gridPoint = DrawTriangleMesh.worldToFloodGrid(position);
-  if (!gridPoint) {
-    buildingFeatureSamplers.set(feature, {
-      gridX: 0,
-      gridY: 0,
-      mode: 'outside'
-    });
-    return 0;
-  }
-
-  const sample = sampleFloodDepthAtGridPoint(jsonData, gridPoint.x, gridPoint.y);
-  buildingFeatureSamplers.set(feature, {
-    gridX: gridPoint.x,
-    gridY: gridPoint.y,
-    mode: sample.mode,
-    sampleVertices: sample.sampleVertices,
-    sampleWeights: sample.sampleWeights,
-    nearestIndex: sample.nearestIndex,
-    meshVertexCount: sample.meshVertexCount,
-    meshFaceCount: sample.meshFaceCount
   });
 
-  return sample.depthM;
+  return count > 0
+    ? { longitude: longitudeSum / count, latitude: latitudeSum / count }
+    : null;
 };
 
-const isBuildingPositionFlooded = (
-  feature: Cesium.Cesium3DTileFeature,
-  position: Cesium.Cartesian3 | null
-) => sampleBuildingDepth(feature, position) > BUILDING_FLOOD_THRESHOLD_M;
+const analyzeBuildingFootprintFlooding = (feature: BuildingFootprintFeature, floodJson: any) => {
+  const polygons = getPolygonRings(feature.geometry);
+  let maxDepthM = 0;
+  let sampled = false;
 
-const getTileFallbackPosition = (tile: any) => {
-  const center = tile?.boundingSphere?.center ?? tile?._boundingVolume?.boundingSphere?.center;
-  return center ? Cesium.Cartesian3.clone(center, new Cesium.Cartesian3()) : null;
-};
-
-const colorOsmBuildingFeature = (
-  feature: Cesium.Cesium3DTileFeature,
-  fallbackPosition: Cesium.Cartesian3 | null
-) => {
-  if (buildingFeatureRevisions.get(feature) === buildingColorRevision.value) {
-    return;
-  }
-
-  buildingFeatureRevisions.set(feature, buildingColorRevision.value);
-  const position = buildingFeaturePositions.has(feature)
-    ? buildingFeaturePositions.get(feature) ?? null
-    : getBuildingFeaturePosition(feature, fallbackPosition);
-
-  if (!buildingFeaturePositions.has(feature)) {
-    buildingFeaturePositions.set(feature, position);
-  }
-
-  const flooded = isBuildingPositionFlooded(feature, position);
-  feature.color = flooded ? FLOODED_BUILDING_COLOR : SAFE_BUILDING_COLOR;
-
-  buildingStats.value.total += 1;
-  if (flooded) {
-    buildingStats.value.flooded += 1;
-  } else {
-    buildingStats.value.safe += 1;
-  }
-};
-
-const colorOsmBuildingContent = (content: any, fallbackPosition: Cesium.Cartesian3 | null) => {
-  if (!content) {
-    return;
-  }
-
-  if (Array.isArray(content.innerContents)) {
-    content.innerContents.forEach((innerContent: any) => colorOsmBuildingContent(innerContent, fallbackPosition));
-  }
-
-  const featureCount = Number(content.featuresLength ?? 0);
-  if (!Number.isFinite(featureCount) || featureCount <= 0 || typeof content.getFeature !== 'function') {
-    return;
-  }
-
-  for (let index = 0; index < featureCount; index += 1) {
-    const feature = content.getFeature(index);
-    if (feature) {
-      colorOsmBuildingFeature(feature, fallbackPosition);
-    }
-  }
-};
-
-const handleOsmTileVisible = (tile: any) => {
-  if (!buildingLayerShown.value) {
-    return;
-  }
-
-  const content = tile?.content;
-  if (content && typeof content === 'object') {
-    if (buildingContentRevisions.get(content) === buildingColorRevision.value) {
+  polygons.forEach((polygon) => {
+    const outerRing = polygon[0];
+    if (!outerRing?.length) {
       return;
     }
-    buildingContentRevisions.set(content, buildingColorRevision.value);
-  }
 
-  colorOsmBuildingContent(content, getTileFallbackPosition(tile));
+    const centroid = getRingCentroid(outerRing);
+    if (!centroid) {
+      return;
+    }
+
+    const worldPosition = Cesium.Cartesian3.fromDegrees(centroid.longitude, centroid.latitude);
+    const gridPoint = DrawTriangleMesh.worldToFloodGrid(worldPosition);
+    if (!gridPoint) {
+      return;
+    }
+
+    const sample = sampleFloodDepthAtGridPoint(floodJson, gridPoint.x, gridPoint.y);
+    sampled = true;
+    maxDepthM = Math.max(maxDepthM, sample.depthM);
+  });
+
+  return {
+    flooded: sampled && maxDepthM > 0,
+    sampled,
+    depthM: maxDepthM
+  };
 };
 
-const shouldAutoRefreshBuildingColors = (frame: number) => {
-  if (frame <= 0) {
-    return false;
-  }
-
-  if (frame <= 1 || frame < lastBuildingRefreshFrame) {
-    return true;
-  }
-
-  return lastBuildingRefreshFrame < 0 || frame - lastBuildingRefreshFrame >= BUILDING_AUTO_REFRESH_FRAME_STEP;
-};
-
-const refreshBuildingColors = (showMessage = true, force = true) => {
-  if (!osmBuildingsTileset.value || !buildingLayerShown.value) {
+const addBuildingAnalysisEntity = (
+  viewer: Cesium.Viewer,
+  polygon: number[][][],
+  flooded: boolean
+) => {
+  const outerRing = polygon[0];
+  if (!outerRing?.length) {
     return;
   }
 
-  const frame = currentFloodFrame.value;
-  if (!force && !shouldAutoRefreshBuildingColors(frame)) {
+  const positions = outerRing
+    .map((coordinate) => {
+      const longitude = Number(coordinate[0]);
+      const latitude = Number(coordinate[1]);
+      return Number.isFinite(longitude) && Number.isFinite(latitude)
+        ? Cesium.Cartesian3.fromDegrees(longitude, latitude, BUILDING_HEIGHT_ABOVE_TERRAIN_M + 0.5)
+        : null;
+    })
+    .filter((position): position is Cesium.Cartesian3 => position !== null);
+
+  if (positions.length < 3) {
     return;
   }
 
-  lastBuildingRefreshFrame = frame;
-  const frameLabel = currentFloodFrame.value > 0 ? `第 ${currentFloodFrame.value} 帧` : '当前帧';
-  resetBuildingColorPass(showMessage ? `已按${frameLabel}刷新建筑染色` : undefined);
+  const entity = viewer.entities.add({
+    polygon: {
+      hierarchy: new Cesium.PolygonHierarchy(positions),
+      material: flooded
+        ? Cesium.Color.RED.withAlpha(0.72)
+        : Cesium.Color.LIME.withAlpha(0.42),
+      outline: true,
+      outlineColor: flooded
+        ? Cesium.Color.DARKRED.withAlpha(0.95)
+        : Cesium.Color.DARKGREEN.withAlpha(0.85),
+      perPositionHeight: true
+    }
+  });
+  buildingAnalysisEntities.push(entity);
+};
+
+const analyzeBuildingFlooding = async () => {
+  const viewer = props.viewer;
+  const tileset = buildingTileset.value;
+  const floodJson = lastLoadedFloodJson.value;
+
+  if (!viewer || !tileset || !buildingLayerShown.value) {
+    buildingLayerMessage.value = '请先加载并显示三维建筑';
+    return;
+  }
+
+  if (!floodJson || !DrawTriangleMesh.getCurrentModelMatrix()) {
+    buildingLayerMessage.value = '请先播放洪水案例，播放完成后再进行淹没分析';
+    return;
+  }
+
+  buildingLayerLoading.value = true;
+  await showBuildingLoadMessage('正在读取建筑轮廓并进行淹没分析...');
+
+  try {
+    const response = await fetch(BUILDING_FOOTPRINT_GEOJSON_URL, { cache: 'no-cache' });
+    if (!response.ok) {
+      throw new Error(`建筑轮廓读取失败：${response.status}`);
+    }
+
+    const geojson = await response.json() as BuildingFootprintCollection;
+    clearBuildingAnalysisEntities(viewer);
+
+    let total = 0;
+    let flooded = 0;
+    geojson.features.forEach((feature) => {
+      const analysis = analyzeBuildingFootprintFlooding(feature, floodJson);
+      if (!analysis?.sampled) {
+        return;
+      }
+
+      total += 1;
+      if (analysis.flooded) {
+        flooded += 1;
+      }
+
+      getPolygonRings(feature.geometry).forEach((polygon) => {
+        addBuildingAnalysisEntity(viewer, polygon, analysis.flooded);
+      });
+    });
+
+    buildingStats.value = {
+      total,
+      flooded,
+      safe: Math.max(0, total - flooded)
+    };
+    tileset.style = new Cesium.Cesium3DTileStyle({
+      color: "color('#7CFF6B', 0.82)"
+    });
+    buildingLayerMessage.value = `淹没分析完成：采用当前已加载洪水帧 ${currentFloodFrame.value || '--'}，淹没 ${flooded}/${total} 栋`;
+    viewer.scene.requestRender();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '建筑淹没分析失败';
+    buildingLayerMessage.value = message;
+  } finally {
+    buildingLayerLoading.value = false;
+  }
+};
+
+const getBuildingFocusCartographics = () => BUILDING_TERRAIN_SAMPLE_POINTS.map(
+  ([longitude, latitude]) => Cesium.Cartographic.fromDegrees(longitude, latitude)
+);
+
+const getBuildingFocusTerrainHeightFromGlobe = (viewer: Cesium.Viewer) => {
+  const heights = getBuildingFocusCartographics()
+    .map((position) => viewer.scene.globe.getHeight(position))
+    .filter((height): height is number => typeof height === 'number' && Number.isFinite(height));
+
+  if (!heights.length) {
+    return null;
+  }
+
+  return heights.reduce((sum, height) => sum + height, 0) / heights.length;
+};
+
+const getBuildingTilesetSourceGroundHeight = async () => {
+  try {
+    const response = await fetch(BUILDING_TILESET_URL, { cache: 'no-cache' });
+    if (!response.ok) {
+      return null;
+    }
+
+    const tilesetJson = await response.json() as BuildingTilesetJson;
+    const box = tilesetJson.root?.boundingVolume?.box;
+    if (!box || box.length !== 12) {
+      return null;
+    }
+
+    const transform = Cesium.Matrix4.fromArray(tilesetJson.root?.transform ?? Cesium.Matrix4.toArray(Cesium.Matrix4.IDENTITY));
+    const center = new Cesium.Cartesian3(box[0], box[1], box[2]);
+    const axisX = new Cesium.Cartesian3(box[3], box[4], box[5]);
+    const axisY = new Cesium.Cartesian3(box[6], box[7], box[8]);
+    const axisZ = new Cesium.Cartesian3(box[9], box[10], box[11]);
+    const heights: number[] = [];
+
+    for (const sx of [-1, 1]) {
+      for (const sy of [-1, 1]) {
+        for (const sz of [-1, 1]) {
+          const corner = Cesium.Cartesian3.clone(center);
+          Cesium.Cartesian3.add(corner, Cesium.Cartesian3.multiplyByScalar(axisX, sx, new Cesium.Cartesian3()), corner);
+          Cesium.Cartesian3.add(corner, Cesium.Cartesian3.multiplyByScalar(axisY, sy, new Cesium.Cartesian3()), corner);
+          Cesium.Cartesian3.add(corner, Cesium.Cartesian3.multiplyByScalar(axisZ, sz, new Cesium.Cartesian3()), corner);
+          const worldCorner = Cesium.Matrix4.multiplyByPoint(transform, corner, new Cesium.Cartesian3());
+          const cartographic = Cesium.Cartographic.fromCartesian(worldCorner);
+          if (Number.isFinite(cartographic.height)) {
+            heights.push(cartographic.height);
+          }
+        }
+      }
+    }
+
+    return heights.length ? Math.min(...heights) : null;
+  } catch (error) {
+    console.warn('Failed to read building tileset source ground height.', error);
+    return null;
+  }
+};
+
+const applyBuildingTilesetTerrainOffset = (viewer: Cesium.Viewer, tileset: Cesium.Cesium3DTileset) => {
+  const tilesetCenter = Cesium.Cartographic.fromCartesian(tileset.boundingSphere.center);
+  const focus = Cesium.Cartographic.fromDegrees(BUILDING_FOCUS_LON, BUILDING_FOCUS_LAT);
+  const terrainHeight = getBuildingFocusTerrainHeightFromGlobe(viewer);
+  if (terrainHeight === null) {
+    return null;
+  }
+  const sourceGroundHeight = buildingTilesetSourceGroundHeight ?? tilesetCenter.height;
+
+  const currentCenter = Cesium.Cartesian3.fromRadians(
+    focus.longitude,
+    focus.latitude,
+    sourceGroundHeight
+  );
+  const terrainCenter = Cesium.Cartesian3.fromRadians(
+    focus.longitude,
+    focus.latitude,
+    terrainHeight + BUILDING_HEIGHT_ABOVE_TERRAIN_M + BUILDING_MANUAL_HEIGHT_OFFSET_M
+  );
+  const translation = Cesium.Cartesian3.subtract(terrainCenter, currentCenter, new Cesium.Cartesian3());
+  tileset.modelMatrix = Cesium.Matrix4.fromTranslation(translation);
+  viewer.scene.requestRender();
+  return terrainHeight;
+};
+
+const keepBuildingTilesetOnTerrain = (viewer: Cesium.Viewer, tileset: Cesium.Cesium3DTileset) => {
+  let attempts = 0;
+
+  const retry = () => {
+    if (tileset.isDestroyed() || buildingTileset.value !== tileset || attempts >= BUILDING_TERRAIN_RETRY_COUNT) {
+      return;
+    }
+
+    attempts += 1;
+    const terrainHeight = applyBuildingTilesetTerrainOffset(viewer, tileset);
+    if (terrainHeight !== null) {
+      buildingLayerMessage.value = `${BUILDING_TILESET_LABEL}已贴近关注范围地形：平均地形高程 ${terrainHeight.toFixed(1)}m，贴地偏移 ${BUILDING_HEIGHT_ABOVE_TERRAIN_M + BUILDING_MANUAL_HEIGHT_OFFSET_M}m`;
+      return;
+    }
+
+    buildingLayerMessage.value = `${BUILDING_TILESET_LABEL}已加载，正在等待关注范围 Cesium 地形高度...`;
+    window.setTimeout(retry, 500);
+  };
+
+  retry();
 };
 
 const toggleOsmBuildings = async () => {
@@ -801,14 +822,17 @@ const toggleOsmBuildings = async () => {
     return;
   }
 
-  if (osmBuildingsTileset.value) {
+  if (buildingTileset.value) {
     const nextShown = !buildingLayerShown.value;
-    osmBuildingsTileset.value.show = nextShown;
+    buildingTileset.value.show = nextShown;
+    buildingAnalysisEntities.forEach((entity) => {
+      entity.show = nextShown;
+    });
     buildingLayerShown.value = nextShown;
     buildingLayerMessage.value = nextShown ? '建筑图层已显示' : '建筑图层已隐藏';
 
     if (nextShown) {
-      refreshBuildingColors(false);
+      viewer.scene.requestRender();
     } else {
       viewer.scene.requestRender();
     }
@@ -816,15 +840,30 @@ const toggleOsmBuildings = async () => {
   }
 
   buildingLayerLoading.value = true;
-  buildingLayerMessage.value = '正在加载建筑图层';
+  await showBuildingLoadMessage(`开始加载${BUILDING_TILESET_LABEL}...`);
 
   try {
-    const tileset = await Cesium.Cesium3DTileset.fromIonAssetId(96188, {
+    buildingTilesetSourceGroundHeight = null;
+    await showBuildingLoadMessage('正在读取三维建筑源高度...');
+    buildingTilesetSourceGroundHeight = await getBuildingTilesetSourceGroundHeight();
+    await showBuildingLoadMessage('正在读取三维建筑 tileset...');
+    const tileset = await Cesium.Cesium3DTileset.fromUrl(BUILDING_TILESET_URL, {
       enableShowOutline: false,
-      showOutline: false
+      showOutline: false,
+      backFaceCulling: false,
+      debugShowBoundingVolume: BUILDING_DEBUG_SHOW_BOUNDING_VOLUME,
+      debugColorizeTiles: BUILDING_DEBUG_COLORIZE_TILES
     });
-    tileset.style = new Cesium.Cesium3DTileStyle({
-      color: BUILDING_STYLE_GREEN
+    tileset.backFaceCulling = false;
+    tileset.tileFailed.addEventListener((error: any) => {
+      const url = typeof error?.url === 'string' ? error.url.split('/').pop() : '未知文件';
+      const message = typeof error?.message === 'string' ? error.message : '未知错误';
+      buildingLayerMessage.value = `三维建筑瓦片加载失败：${url}，${message}`;
+    });
+    tileset.tileLoad.addEventListener(() => {
+      if (buildingLayerShown.value) {
+        buildingLayerMessage.value = `${BUILDING_TILESET_LABEL}瓦片内容已加载，若仍只见包围盒请检查模型材质/高度`;
+      }
     });
 
     if (isPanelDisposed || props.viewer !== viewer) {
@@ -834,12 +873,22 @@ const toggleOsmBuildings = async () => {
       return;
     }
 
+    await showBuildingLoadMessage('正在添加三维建筑图层...');
+    previousDepthTestAgainstTerrain = viewer.scene.globe.depthTestAgainstTerrain;
+    viewer.scene.globe.depthTestAgainstTerrain = false;
     viewer.scene.primitives.add(tileset);
-    osmBuildingsTileset.value = tileset;
+    buildingTileset.value = tileset;
     buildingLayerViewer = viewer;
     buildingLayerShown.value = true;
-    removeOsmTileVisibleListener = tileset.tileVisible.addEventListener(handleOsmTileVisible);
-    resetBuildingColorPass('建筑图层已加载');
+    buildingStats.value = { total: 0, flooded: 0, safe: 0 };
+    const center = Cesium.Cartographic.fromCartesian(tileset.boundingSphere.center);
+    buildingLayerMessage.value = `${BUILDING_TILESET_LABEL}已加载：tileset中心 ${Cesium.Math.toDegrees(center.longitude).toFixed(6)}, ${Cesium.Math.toDegrees(center.latitude).toFixed(6)}，已定位到关注矩形`;
+    void viewer.camera.flyTo({
+      destination: BUILDING_FOCUS_RECTANGLE,
+      duration: 1.2
+    });
+    keepBuildingTilesetOnTerrain(viewer, tileset);
+    viewer.scene.requestRender();
   } catch (error) {
     const message = error instanceof Error ? error.message : '建筑图层加载失败';
     buildingLayerMessage.value = message;
@@ -849,38 +898,28 @@ const toggleOsmBuildings = async () => {
 };
 
 const destroyOsmBuildings = () => {
-  if (removeOsmTileVisibleListener) {
-    removeOsmTileVisibleListener();
-    removeOsmTileVisibleListener = null;
-  }
-
-  const tileset = osmBuildingsTileset.value;
+  const tileset = buildingTileset.value;
   const viewer = buildingLayerViewer ?? props.viewer;
   if (tileset && viewer && !tileset.isDestroyed()) {
     viewer.scene.primitives.remove(tileset);
     viewer.scene.requestRender();
   }
 
-  osmBuildingsTileset.value = null;
+  if (previousDepthTestAgainstTerrain !== null && viewer) {
+    viewer.scene.globe.depthTestAgainstTerrain = previousDepthTestAgainstTerrain;
+  }
+  clearBuildingAnalysisEntities(viewer ?? undefined);
+  previousDepthTestAgainstTerrain = null;
+  buildingTileset.value = null;
   buildingLayerViewer = null;
   buildingLayerShown.value = false;
   buildingLayerLoading.value = false;
+  buildingTilesetSourceGroundHeight = null;
   buildingStats.value = { total: 0, flooded: 0, safe: 0 };
-  resetBuildingSamplerCache();
-  lastBuildingRefreshFrame = -1;
 };
 
 watch(selectedFloodDepthPoint, updateDepthMarker, { immediate: true });
 watch(() => props.viewer, updateDepthMarker);
-watch(currentFloodFrame, (frame, previousFrame) => {
-  if (frame <= 1 || frame < previousFrame) {
-    resetBuildingSamplerCache();
-    lastBuildingRefreshFrame = -1;
-  }
-
-  refreshBuildingColors(false, false);
-});
-
 onBeforeUnmount(() => {
   isPanelDisposed = true;
   stopDepthPick();
@@ -1006,8 +1045,8 @@ onBeforeUnmount(() => {
         <button type="button" class="point-btn primary" :disabled="buildingLayerLoading" @click="toggleOsmBuildings">
           {{ buildingToggleLabel }}
         </button>
-        <button type="button" class="point-btn" :disabled="!buildingLayerShown" @click="refreshBuildingColors()">
-          刷新染色
+        <button type="button" class="point-btn" :disabled="!buildingLayerShown || buildingLayerLoading" @click="refreshBuildingColors()">
+          淹没分析
         </button>
       </div>
 

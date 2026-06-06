@@ -1,4 +1,6 @@
 import os
+import json
+import struct
 from flask import Flask, render_template, request, jsonify, send_file, send_from_directory, Response, stream_with_context
 from werkzeug.utils import secure_filename
 from datetime import datetime
@@ -87,6 +89,132 @@ SHOWCASE_CASES = {
     }
 }
 SHOWCASE_ALLOWED_EXTENSIONS = {'.asc', '.xml', '.json'}
+BUILDINGS_ROOT = os.path.abspath(os.path.join(
+    os.path.dirname(os.path.dirname(__file__)),
+    'public',
+    'data',
+    'buildings'
+))
+ANXIAN_BUILDINGS_DIR = os.path.join(BUILDINGS_ROOT, 'anxianbuildings')
+ANXIAN_BUILDINGS_SHP = os.path.join(ANXIAN_BUILDINGS_DIR, 'anxianbuildings.shp')
+ANXIAN_BUILDINGS_CACHE = os.path.join(ANXIAN_BUILDINGS_DIR, 'anxianbuildings.filtered.geojson')
+ANXIAN_BUILDINGS_SRC_CRS = 'EPSG:32649'
+ANXIAN_BUILDINGS_DST_CRS = 'EPSG:4326'
+ANXIAN_BUILDINGS_BBOX = {
+    'min_lon': 104.286360,
+    'max_lon': 104.487012,
+    'min_lat': 31.558172,
+    'max_lat': 31.653796
+}
+
+
+def bbox_intersects_filter(lons, lats):
+    if not lons or not lats:
+        return False
+
+    return not (
+        max(lons) < ANXIAN_BUILDINGS_BBOX['min_lon']
+        or min(lons) > ANXIAN_BUILDINGS_BBOX['max_lon']
+        or max(lats) < ANXIAN_BUILDINGS_BBOX['min_lat']
+        or min(lats) > ANXIAN_BUILDINGS_BBOX['max_lat']
+    )
+
+
+def read_anxian_building_shapes(shp_path):
+    features = []
+
+    with open(shp_path, 'rb') as shp_file:
+        header = shp_file.read(100)
+        if len(header) < 100:
+            raise ValueError('建筑 shp 文件头不完整')
+
+        while True:
+            record_header = shp_file.read(8)
+            if not record_header:
+                break
+            if len(record_header) < 8:
+                raise ValueError('建筑 shp 记录头不完整')
+
+            record_number, content_length_words = struct.unpack('>2i', record_header)
+            content = shp_file.read(content_length_words * 2)
+            if len(content) < 4:
+                continue
+
+            shape_type = struct.unpack('<i', content[:4])[0]
+            if shape_type == 0:
+                continue
+            if shape_type not in (5, 15, 25):
+                continue
+            if len(content) < 44:
+                continue
+
+            num_parts, num_points = struct.unpack('<2i', content[36:44])
+            if num_parts <= 0 or num_points <= 0:
+                continue
+
+            parts_offset = 44
+            points_offset = parts_offset + num_parts * 4
+            points_end = points_offset + num_points * 16
+            if len(content) < points_end:
+                continue
+
+            parts = list(struct.unpack(f'<{num_parts}i', content[parts_offset:points_offset]))
+            raw_points = struct.unpack(f'<{num_points * 2}d', content[points_offset:points_end])
+            points = [(raw_points[index], raw_points[index + 1]) for index in range(0, len(raw_points), 2)]
+
+            rings = []
+            feature_lons = []
+            feature_lats = []
+            for part_index, start in enumerate(parts):
+                end = parts[part_index + 1] if part_index + 1 < len(parts) else num_points
+                ring_points = points[start:end]
+                if len(ring_points) < 3:
+                    continue
+
+                xs = [point[0] for point in ring_points]
+                ys = [point[1] for point in ring_points]
+                lons, lats = transform(ANXIAN_BUILDINGS_SRC_CRS, ANXIAN_BUILDINGS_DST_CRS, xs, ys)
+                feature_lons.extend(lons)
+                feature_lats.extend(lats)
+                ring = [[round(lon, 7), round(lat, 7)] for lon, lat in zip(lons, lats)]
+                if ring[0] != ring[-1]:
+                    ring.append(ring[0])
+                rings.append(ring)
+
+            if rings and bbox_intersects_filter(feature_lons, feature_lats):
+                features.append({
+                    'type': 'Feature',
+                    'properties': {
+                        'id': record_number,
+                        'height': 12
+                    },
+                    'geometry': {
+                        'type': 'Polygon',
+                        'coordinates': rings
+                    }
+                })
+
+    return {
+        'type': 'FeatureCollection',
+        'features': features
+    }
+
+
+def get_anxian_buildings_geojson():
+    if not os.path.exists(ANXIAN_BUILDINGS_SHP):
+        raise FileNotFoundError(f'建筑 shp 文件不存在: {ANXIAN_BUILDINGS_SHP}')
+
+    should_rebuild = (
+        not os.path.exists(ANXIAN_BUILDINGS_CACHE)
+        or os.path.getmtime(ANXIAN_BUILDINGS_CACHE) < os.path.getmtime(ANXIAN_BUILDINGS_SHP)
+    )
+
+    if should_rebuild:
+        geojson = read_anxian_building_shapes(ANXIAN_BUILDINGS_SHP)
+        with open(ANXIAN_BUILDINGS_CACHE, 'w', encoding='utf-8') as cache_file:
+            json.dump(geojson, cache_file, ensure_ascii=False, separators=(',', ':'))
+
+    return ANXIAN_BUILDINGS_CACHE
 
 
 def get_showcase_case(case_id):
@@ -277,6 +405,17 @@ def get_showcase_file(case_id, filename):
     return response
 
 # 辅助函数：清理临时文件
+@app.route('/api/buildings/anxianbuildings/geojson', methods=['GET'])
+def get_anxian_buildings():
+    try:
+        geojson_path = get_anxian_buildings_geojson()
+        response = send_file(geojson_path, mimetype='application/geo+json', conditional=True, max_age=3600)
+        response.headers['Cache-Control'] = 'public, max-age=3600'
+        return response
+    except Exception as e:
+        return jsonify({'success': False, 'message': f'建筑数据读取失败: {str(e)}'}), 500
+
+
 def cleanup_file(file_path):
     """删除文件"""
     if file_path and os.path.exists(file_path):

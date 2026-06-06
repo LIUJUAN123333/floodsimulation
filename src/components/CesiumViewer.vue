@@ -52,6 +52,7 @@ onMounted(async () => {
       geocoder: false,
       homeButton: false,
       infoBox: false,
+      selectionIndicator: false,
       sceneModePicker: false,
       navigationHelpButton: false,
       creditContainer: document.createElement('div'),
