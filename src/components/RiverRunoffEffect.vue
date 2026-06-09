@@ -35,6 +35,7 @@ type RiverSegment = {
   flowPositions: Cesium.Cartesian3[];
   activePositions: Cesium.Cartesian3[];
   center: Cesium.Cartesian3;
+  baseEntity?: Cesium.Entity;
   pulseEntity?: Cesium.Entity;
   flowEntity?: Cesium.Entity;
 };
@@ -50,6 +51,9 @@ const emit = defineEmits<{
 
 const RUNOFF_DURATION_MS = 9000;
 const FLOOD_TRIGGER_RATIO = 0.86;
+const CAMERA_FLY_DURATION_MS = 1700;
+const PREVIEW_FLASH_DURATION_MS = 6000;
+const PREVIEW_FLASH_COUNT = 2;
 const FLOW_HEIGHT_M = 0;
 const FLOW_LINE_HEIGHT_M = 30;
 const BREACH_LON = 104.288824;
@@ -318,22 +322,47 @@ const createRunoffScene = async () => {
 
   const segments = buildRiverSegments();
 
+  let isPreviewDone = false;
+  let currentGlobalFlash = 0;
+
+  const styleCache = new Map();
+  const whiteColor = Cesium.Color.WHITE;
+
+  const getSegmentStyle = (gridCode: number) => {
+    const streamLevel = Math.max(1, gridCode);
+    if (!styleCache.has(streamLevel)) {
+      const isMainStream = streamLevel >= 3;
+      const baseWidth = isMainStream ? 7 + streamLevel * 1.5 : 3 + streamLevel * 1.0;
+      const baseGlow = isMainStream ? 0.25 : 0.1;
+      const baseColorStr = isMainStream ? '#00bbff' : '#0a59a8';
+      const baseAlpha = isMainStream ? 0.8 : 0.4;
+      const baseColor = Cesium.Color.fromCssColorString(baseColorStr).withAlpha(baseAlpha);
+
+      const material = new Cesium.PolylineGlowMaterialProperty({
+        glowPower: new Cesium.CallbackProperty(() => baseGlow + currentGlobalFlash * 0.7, false),
+        taperPower: 1,
+        color: new Cesium.CallbackProperty(() => {
+          const flashWeight = currentGlobalFlash * 0.7; // Blend towards white during flash
+          return Cesium.Color.lerp(baseColor, whiteColor, flashWeight, new Cesium.Color());
+        }, false)
+      });
+      styleCache.set(streamLevel, { width: baseWidth, material });
+    }
+    return styleCache.get(streamLevel)!;
+  };
+
   segments.forEach((segment) => {
     const streamLevel = Math.max(1, segment.gridCode);
     const isMainStream = streamLevel >= 3;
+    const style = getSegmentStyle(segment.gridCode);
 
-    // Glowing base static line
-    const baseWidth = isMainStream ? 7 + streamLevel * 1.5 : 3 + streamLevel * 1.0;
-    riverDataSource?.entities.add({
+    segment.baseEntity = riverDataSource?.entities.add({
       polyline: {
         positions: segment.positions,
-        width: baseWidth,
+        width: style.width,
         clampToGround: true,
-        material: new Cesium.PolylineGlowMaterialProperty({
-          glowPower: isMainStream ? 0.25 : 0.1,
-          taperPower: 1,
-          color: Cesium.Color.fromCssColorString(isMainStream ? '#00bbff' : '#0a59a8').withAlpha(isMainStream ? 0.8 : 0.4)
-        })
+        material: style.material,
+        show: true
       }
     });
 
@@ -366,7 +395,7 @@ const createRunoffScene = async () => {
   });
 
   addBreachPulse(segments);
-  runoffStartMs = performance.now();
+  runoffStartMs = performance.now() + CAMERA_FLY_DURATION_MS;
   completedForCycle = false;
 
   props.viewer.scene.camera.flyTo({
@@ -380,12 +409,38 @@ const createRunoffScene = async () => {
   });
 
   const updateRunoffFrame = () => {
-    const elapsed = performance.now() - runoffStartMs;
-    const progress = Math.min(1, elapsed / RUNOFF_DURATION_MS);
+    const elapsed = Math.max(0, performance.now() - runoffStartMs);
+    const previewProgress = Math.min(1, elapsed / PREVIEW_FLASH_DURATION_MS);
+    const isPreviewStage = previewProgress < 1;
+    const runoffElapsed = Math.max(0, elapsed - PREVIEW_FLASH_DURATION_MS);
+    const progress = Math.min(1, runoffElapsed / RUNOFF_DURATION_MS);
+
+    if (isPreviewStage) {
+      currentGlobalFlash = 0.5 + 0.5 * Math.sin(previewProgress * PREVIEW_FLASH_COUNT * Math.PI * 2);
+    } else if (!isPreviewDone) {
+      isPreviewDone = true;
+      currentGlobalFlash = 0;
+      // 闪烁结束后，仅进行一次区分级材质赋值，切断回调从而冻结样式
+      segments.forEach((segment) => {
+        if (segment.baseEntity?.polyline) {
+          const streamLevel = Math.max(1, segment.gridCode);
+          const isMainStream = streamLevel >= 3;
+          const baseWidth = isMainStream ? 7 + streamLevel * 1.5 : 3 + streamLevel * 1.0;
+
+          segment.baseEntity.polyline.width = new Cesium.ConstantProperty(baseWidth);
+          segment.baseEntity.polyline.material = new Cesium.PolylineGlowMaterialProperty({
+            glowPower: isMainStream ? 0.25 : 0.1,
+            taperPower: 1,
+            color: Cesium.Color.fromCssColorString(isMainStream ? '#00bbff' : '#0a59a8')
+              .withAlpha(isMainStream ? 0.8 : 0.4)
+          });
+        }
+      });
+    }
 
     segments.forEach((segment) => {
       const localProgress = (progress - segment.startRatio) / Math.max(0.001, segment.peakRatio - segment.startRatio);
-      const shouldShow = localProgress > 0 && progress < 0.985;
+      const shouldShow = !isPreviewStage && localProgress > 0 && progress < 0.985;
       const pulsePolyline = segment.pulseEntity?.polyline;
       const flowPolyline = segment.flowEntity?.polyline;
       const streamLevel = Math.max(1, segment.gridCode);
@@ -421,8 +476,8 @@ const createRunoffScene = async () => {
 
     if (breachChannelEntity?.polyline) {
       const breachFlash = 0.5 + 0.5 * Math.sin(elapsed * 0.018);
-      breachChannelEntity.polyline.show = new Cesium.ConstantProperty(progress > 0.72);
-      breachChannelEntity.polyline.width = new Cesium.ConstantProperty(progress > 0.72 ? 14 + breachFlash * 14 : 1);
+      breachChannelEntity.polyline.show = new Cesium.ConstantProperty(!isPreviewStage && progress > 0.72);
+      breachChannelEntity.polyline.width = new Cesium.ConstantProperty(!isPreviewStage && progress > 0.72 ? 14 + breachFlash * 14 : 1);
       breachChannelEntity.polyline.material = new Cesium.PolylineGlowMaterialProperty({
         glowPower: 0.48 + breachFlash * 0.58,
         taperPower: 0.22,
@@ -432,6 +487,7 @@ const createRunoffScene = async () => {
 
     if (breachChannelEntity?.point) {
       const breachFlash = 0.5 + 0.5 * Math.sin(elapsed * 0.022);
+      breachChannelEntity.point.show = new Cesium.ConstantProperty(!isPreviewStage);
       breachChannelEntity.point.pixelSize = new Cesium.ConstantProperty(14 + breachFlash * 18);
       breachChannelEntity.point.color = new Cesium.ConstantProperty(
         Cesium.Color.fromCssColorString('#ffffff').withAlpha(0.78 + breachFlash * 0.22)
@@ -445,6 +501,7 @@ const createRunoffScene = async () => {
       const bloom = Math.max(0, (progress - 0.68) / 0.32);
       const blink = 0.5 + 0.5 * Math.sin(elapsed * 0.02);
       const radius = 420 + bloom * 3400 + blink * 980;
+      outletEntity.ellipse.show = new Cesium.ConstantProperty(!isPreviewStage);
       outletEntity.ellipse.semiMajorAxis = new Cesium.ConstantProperty(radius);
       outletEntity.ellipse.semiMinorAxis = new Cesium.ConstantProperty(radius * 0.72);
       outletEntity.ellipse.material = new Cesium.ColorMaterialProperty(
@@ -452,14 +509,14 @@ const createRunoffScene = async () => {
       );
     }
 
-    if (!completedForCycle && progress >= FLOOD_TRIGGER_RATIO) {
+    if (!isPreviewStage && !completedForCycle && progress >= FLOOD_TRIGGER_RATIO) {
       completedForCycle = true;
       emit('runoffComplete');
     }
 
     props.viewer.scene.requestRender();
 
-    if (progress < 1 && props.active) {
+    if ((isPreviewStage || progress < 1) && props.active) {
       runoffAnimationFrameId = window.requestAnimationFrame(updateRunoffFrame);
     } else {
       runoffAnimationFrameId = null;
