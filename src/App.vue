@@ -38,7 +38,9 @@ const terrainEnabled = ref(true);
 const terrainSwitching = ref(false);
 const sceneEffectsPanelVisible = ref(false);
 const rainstormEnabled = ref(false);
+const runoffRainstormActive = ref(false);
 const riverRunoffEnabled = ref(false);
+const effectiveRainstormEnabled = computed(() => rainstormEnabled.value || runoffRainstormActive.value);
 
 const isMapReady = ref(false);
 const showUI = ref(false);
@@ -147,6 +149,10 @@ const onRiverRunoffComplete = () => {
   floodLoaderRef.value.playShowcase('xiaojiaqiao');
 };
 
+const onRiverRunoffRainstormChange = (active: boolean) => {
+  runoffRainstormActive.value = active;
+};
+
 type GalleryShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
 
 const onShowcase = (caseId: GalleryShowcaseCaseId) => {
@@ -183,6 +189,7 @@ const resetFloodScene = () => {
   panelSubtitle.value = '';
   sceneEffectsPanelVisible.value = false;
   rainstormEnabled.value = false;
+  runoffRainstormActive.value = false;
   riverRunoffEnabled.value = false;
   showUI.value = true;
 
@@ -214,12 +221,13 @@ const onFlyComplete = () => { showUI.value = true; };
     
     <CesiumViewer ref="cesiumViewerRef" @viewer-ready="onViewerReady" @fly-complete="onFlyComplete" />
     <FloodLoader v-if="viewer" ref="floodLoaderRef" class="showcase-flood-loader" :viewer="viewer" />
-    <RainstormEffect v-if="viewer" :viewer="viewer" :active="rainstormEnabled" />
+    <RainstormEffect v-if="viewer" :viewer="viewer" :active="effectiveRainstormEnabled" />
     <RiverRunoffEffect
       v-if="viewer"
       :viewer="viewer"
       :active="riverRunoffEnabled"
       @runoff-complete="onRiverRunoffComplete"
+      @rainstorm-change="onRiverRunoffRainstormChange"
     />
 
     <transition name="scene-effects">
@@ -227,7 +235,7 @@ const onFlyComplete = () => { showUI.value = true; };
         <button
           type="button"
           class="scene-effects-button"
-          :class="{ active: sceneEffectsPanelVisible || rainstormEnabled || riverRunoffEnabled }"
+          :class="{ active: sceneEffectsPanelVisible || effectiveRainstormEnabled || riverRunoffEnabled }"
           title="场景效果"
           aria-label="场景效果"
           @click="toggleSceneEffectsPanel"
@@ -242,7 +250,7 @@ const onFlyComplete = () => { showUI.value = true; };
           <SceneEffectsPanel
             v-if="sceneEffectsPanelVisible"
             class="scene-effects-flyout"
-            :rainstorm-enabled="rainstormEnabled"
+            :rainstorm-enabled="effectiveRainstormEnabled"
             :river-runoff-enabled="riverRunoffEnabled"
             @toggle-rainstorm="toggleRainstorm"
             @toggle-river-runoff="toggleRiverRunoff"

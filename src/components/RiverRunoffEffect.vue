@@ -47,11 +47,13 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   runoffComplete: [];
+  rainstormChange: [active: boolean];
 }>();
 
 const RUNOFF_DURATION_MS = 9000;
 const FLOOD_TRIGGER_RATIO = 0.86;
 const CAMERA_FLY_DURATION_MS = 1700;
+const RAIN_DURATION_MS = 3500;
 const PREVIEW_FLASH_DURATION_MS = 6000;
 const PREVIEW_FLASH_COUNT = 2;
 const FLOW_HEIGHT_M = 0;
@@ -78,6 +80,7 @@ let completedForCycle = false;
 let runoffAnimationFrameId: number | null = null;
 let outletEntity: Cesium.Entity | null = null;
 let breachChannelEntity: Cesium.Entity | null = null;
+let rainstormActiveForCycle = false;
 let originalDepthTestAgainstTerrain: boolean | null = null;
 
 const getSegmentCenter = (positions: Cesium.Cartesian3[]) => {
@@ -309,6 +312,15 @@ const addBreachPulse = (segments: RiverSegment[]) => {
   });
 };
 
+const setRunoffRainstormActive = (active: boolean) => {
+  if (rainstormActiveForCycle === active) {
+    return;
+  }
+
+  rainstormActiveForCycle = active;
+  emit('rainstormChange', active);
+};
+
 const createRunoffScene = async () => {
   clearRunoffScene();
 
@@ -362,7 +374,7 @@ const createRunoffScene = async () => {
         width: style.width,
         clampToGround: true,
         material: style.material,
-        show: true
+        show: false
       }
     });
 
@@ -394,9 +406,24 @@ const createRunoffScene = async () => {
 
   });
 
+  let isRiverNetworkVisible = false;
+  const setRiverNetworkVisible = (visible: boolean) => {
+    if (isRiverNetworkVisible === visible) {
+      return;
+    }
+
+    isRiverNetworkVisible = visible;
+    segments.forEach((segment) => {
+      if (segment.baseEntity?.polyline) {
+        segment.baseEntity.polyline.show = new Cesium.ConstantProperty(visible);
+      }
+    });
+  };
+
   addBreachPulse(segments);
   runoffStartMs = performance.now() + CAMERA_FLY_DURATION_MS;
   completedForCycle = false;
+  setRunoffRainstormActive(false);
 
   props.viewer.scene.camera.flyTo({
     destination: Cesium.Cartesian3.fromDegrees(104.302, 31.625, 14500),
@@ -409,15 +436,32 @@ const createRunoffScene = async () => {
   });
 
   const updateRunoffFrame = () => {
-    const elapsed = Math.max(0, performance.now() - runoffStartMs);
-    const previewProgress = Math.min(1, elapsed / PREVIEW_FLASH_DURATION_MS);
-    const isPreviewStage = previewProgress < 1;
-    const runoffElapsed = Math.max(0, elapsed - PREVIEW_FLASH_DURATION_MS);
+    const postCameraElapsed = performance.now() - runoffStartMs;
+    const isCameraStage = postCameraElapsed < 0;
+    const elapsed = Math.max(0, postCameraElapsed);
+    const isRainStage = !isCameraStage && elapsed < RAIN_DURATION_MS;
+    const previewElapsed = Math.max(0, elapsed - RAIN_DURATION_MS);
+    const previewProgress = Math.min(1, previewElapsed / PREVIEW_FLASH_DURATION_MS);
+    const isPreviewStage = !isCameraStage && !isRainStage && previewProgress < 1;
+    const runoffElapsed = Math.max(0, previewElapsed - PREVIEW_FLASH_DURATION_MS);
     const progress = Math.min(1, runoffElapsed / RUNOFF_DURATION_MS);
+    const isRunoffStage = !isCameraStage && !isRainStage && !isPreviewStage;
+
+    if (isCameraStage) {
+      currentGlobalFlash = 0;
+      setRiverNetworkVisible(false);
+    } else if (isRainStage) {
+      currentGlobalFlash = 0;
+      setRunoffRainstormActive(true);
+      setRiverNetworkVisible(false);
+    } else {
+      setRunoffRainstormActive(false);
+      setRiverNetworkVisible(true);
+    }
 
     if (isPreviewStage) {
       currentGlobalFlash = 0.5 + 0.5 * Math.sin(previewProgress * PREVIEW_FLASH_COUNT * Math.PI * 2);
-    } else if (!isPreviewDone) {
+    } else if (!isCameraStage && !isRainStage && !isPreviewDone) {
       isPreviewDone = true;
       currentGlobalFlash = 0;
       // 闪烁结束后，仅进行一次区分级材质赋值，切断回调从而冻结样式
@@ -440,7 +484,7 @@ const createRunoffScene = async () => {
 
     segments.forEach((segment) => {
       const localProgress = (progress - segment.startRatio) / Math.max(0.001, segment.peakRatio - segment.startRatio);
-      const shouldShow = !isPreviewStage && localProgress > 0 && progress < 0.985;
+      const shouldShow = isRunoffStage && localProgress > 0 && progress < 0.985;
       const pulsePolyline = segment.pulseEntity?.polyline;
       const flowPolyline = segment.flowEntity?.polyline;
       const streamLevel = Math.max(1, segment.gridCode);
@@ -476,8 +520,8 @@ const createRunoffScene = async () => {
 
     if (breachChannelEntity?.polyline) {
       const breachFlash = 0.5 + 0.5 * Math.sin(elapsed * 0.018);
-      breachChannelEntity.polyline.show = new Cesium.ConstantProperty(!isPreviewStage && progress > 0.72);
-      breachChannelEntity.polyline.width = new Cesium.ConstantProperty(!isPreviewStage && progress > 0.72 ? 14 + breachFlash * 14 : 1);
+      breachChannelEntity.polyline.show = new Cesium.ConstantProperty(isRunoffStage && progress > 0.72);
+      breachChannelEntity.polyline.width = new Cesium.ConstantProperty(isRunoffStage && progress > 0.72 ? 14 + breachFlash * 14 : 1);
       breachChannelEntity.polyline.material = new Cesium.PolylineGlowMaterialProperty({
         glowPower: 0.48 + breachFlash * 0.58,
         taperPower: 0.22,
@@ -487,7 +531,7 @@ const createRunoffScene = async () => {
 
     if (breachChannelEntity?.point) {
       const breachFlash = 0.5 + 0.5 * Math.sin(elapsed * 0.022);
-      breachChannelEntity.point.show = new Cesium.ConstantProperty(!isPreviewStage);
+      breachChannelEntity.point.show = new Cesium.ConstantProperty(isRunoffStage);
       breachChannelEntity.point.pixelSize = new Cesium.ConstantProperty(14 + breachFlash * 18);
       breachChannelEntity.point.color = new Cesium.ConstantProperty(
         Cesium.Color.fromCssColorString('#ffffff').withAlpha(0.78 + breachFlash * 0.22)
@@ -501,7 +545,7 @@ const createRunoffScene = async () => {
       const bloom = Math.max(0, (progress - 0.68) / 0.32);
       const blink = 0.5 + 0.5 * Math.sin(elapsed * 0.02);
       const radius = 420 + bloom * 3400 + blink * 980;
-      outletEntity.ellipse.show = new Cesium.ConstantProperty(!isPreviewStage);
+      outletEntity.ellipse.show = new Cesium.ConstantProperty(isRunoffStage);
       outletEntity.ellipse.semiMajorAxis = new Cesium.ConstantProperty(radius);
       outletEntity.ellipse.semiMinorAxis = new Cesium.ConstantProperty(radius * 0.72);
       outletEntity.ellipse.material = new Cesium.ColorMaterialProperty(
@@ -509,14 +553,14 @@ const createRunoffScene = async () => {
       );
     }
 
-    if (!isPreviewStage && !completedForCycle && progress >= FLOOD_TRIGGER_RATIO) {
+    if (isRunoffStage && !completedForCycle && progress >= FLOOD_TRIGGER_RATIO) {
       completedForCycle = true;
       emit('runoffComplete');
     }
 
     props.viewer.scene.requestRender();
 
-    if ((isPreviewStage || progress < 1) && props.active) {
+    if ((isCameraStage || isRainStage || isPreviewStage || progress < 1) && props.active) {
       runoffAnimationFrameId = window.requestAnimationFrame(updateRunoffFrame);
     } else {
       runoffAnimationFrameId = null;
@@ -531,6 +575,8 @@ const clearRunoffScene = () => {
     window.cancelAnimationFrame(runoffAnimationFrameId);
     runoffAnimationFrameId = null;
   }
+
+  setRunoffRainstormActive(false);
 
   if (riverDataSource) {
     props.viewer.dataSources.remove(riverDataSource, true);
