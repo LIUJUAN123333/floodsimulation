@@ -35,9 +35,6 @@ const startFpsCount = () => {
       }
 
       fpsSamples.value.push(currentFps);
-      if (fpsSamples.value.length > 60) {
-        fpsSamples.value.shift();
-      }
       
       frames = 0;
       last = now;
@@ -157,7 +154,7 @@ const fpsChartFill = computed(() => {
         <div class="fps-metric-card average">
           <span>平均帧率</span>
           <div class="fps-value"><strong>{{ averageFpsDisplay }}</strong><em>FPS</em></div>
-          <small>近 60 秒</small>
+          <small>本次运行</small>
         </div>
       </div>
       <div class="fps-chart-wrapper">
@@ -192,7 +189,7 @@ const fpsChartFill = computed(() => {
         <div class="fps-metric-card average">
           <span>平均帧率</span>
           <div class="fps-value"><strong>{{ averageFpsDisplay }}</strong><em>FPS</em></div>
-          <small>近 60 秒</small>
+          <small>本次运行</small>
         </div>
       </div>
       <div class="fps-chart-wrapper">

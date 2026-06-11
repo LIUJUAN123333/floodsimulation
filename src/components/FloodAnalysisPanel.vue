@@ -27,13 +27,22 @@ const PLOT_RIGHT = 270;
 const PLOT_TOP = 14;
 const PLOT_BOTTOM = 118;
 const BUILDING_FOOTPRINT_GEOJSON_URL = '/data/buildings/clipxiaojiaqiao/clipxiaojiaqiaojson.geojson';
+const ROAD_GEOJSON_URL = '/data/road/clipxiaojiaqiao/clipxiaojiaqiaoroad.geojson';
 const BUILDING_LAYER_LABEL = '肖家桥三维建筑';
+const ROAD_LAYER_LABEL = '肖家桥道路';
 const BUILDING_BASE_HEIGHT_M = 0;
 const BUILDING_MIN_HEIGHT_M = 8;
 const BUILDING_MAX_HEIGHT_M = 38;
 const BUILDING_DEFAULT_COLOR = Cesium.Color.fromCssColorString('#c8d2d8');
 const BUILDING_FLOODED_COLOR = Cesium.Color.fromCssColorString('#e23b32');
 const BUILDING_SAFE_COLOR = Cesium.Color.fromCssColorString('#4bc36a');
+const ROAD_PRIMARY_COLOR = Cesium.Color.fromCssColorString('#f4c45f');
+const ROAD_SECONDARY_COLOR = Cesium.Color.fromCssColorString('#78d7c6');
+const ROAD_LOCAL_COLOR = Cesium.Color.fromCssColorString('#a9bed0');
+const ROAD_OUTLINE_COLOR = Cesium.Color.fromCssColorString('#102333');
+const ROAD_FLOODED_COLOR = Cesium.Color.fromCssColorString('#ff4f5f');
+const ROAD_SAFE_COLOR = Cesium.Color.fromCssColorString('#39dd8a');
+const ROAD_WIDTH_PX = 2.4;
 const makeSvgDataUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 const DEPTH_MARKER_PIN_IMAGE = makeSvgDataUrl(`
 <svg xmlns="http://www.w3.org/2000/svg" width="160" height="200" viewBox="0 0 160 200">
@@ -87,6 +96,12 @@ type BuildingStats = {
   safe: number;
 };
 
+type RoadStats = {
+  total: number;
+  flooded: number;
+  safe: number;
+};
+
 type BuildingFootprintGeometry = {
   type: 'Polygon' | 'MultiPolygon';
   coordinates: number[][][] | number[][][][];
@@ -108,6 +123,27 @@ type BuildingFeatureEntityRecord = {
   entities: Cesium.Entity[];
 };
 
+type RoadGeometry = {
+  type: 'LineString' | 'MultiLineString';
+  coordinates: number[][] | number[][][];
+};
+
+type RoadFeature = {
+  type: 'Feature';
+  geometry?: RoadGeometry | null;
+  properties?: Record<string, unknown>;
+};
+
+type RoadCollection = {
+  type: 'FeatureCollection';
+  features: RoadFeature[];
+};
+
+type RoadFeatureEntityRecord = {
+  feature: RoadFeature;
+  entities: Cesium.Entity[];
+};
+
 type BuildingViewBounds = {
   west: number;
   east: number;
@@ -123,6 +159,12 @@ const buildingLayerMessage = ref('');
 const buildingStats = ref<BuildingStats>({ total: 0, flooded: 0, safe: 0 });
 const buildingDataSource = ref<Cesium.CustomDataSource | null>(null);
 let buildingFeatureEntityRecords: BuildingFeatureEntityRecord[] = [];
+const roadLayerLoading = ref(false);
+const roadLayerShown = ref(false);
+const roadLayerMessage = ref('');
+const roadStats = ref<RoadStats>({ total: 0, flooded: 0, safe: 0 });
+const roadDataSource = ref<Cesium.CustomDataSource | null>(null);
+let roadFeatureEntityRecords: RoadFeatureEntityRecord[] = [];
 let pickHandler: Cesium.ScreenSpaceEventHandler | null = null;
 let depthMarker: Cesium.Entity | null = null;
 let markerViewer: Cesium.Viewer | null = null;
@@ -343,6 +385,30 @@ const buildingToggleLabel = computed(() => {
   return buildingLayerShown.value ? '隐藏建筑' : '显示建筑';
 });
 
+const roadLayerStatus = computed(() => {
+  if (roadLayerLoading.value) {
+    return '加载中';
+  }
+
+  if (roadLayerShown.value) {
+    return '已显示';
+  }
+
+  return roadDataSource.value ? '已隐藏' : '未加载';
+});
+
+const roadToggleLabel = computed(() => {
+  if (roadLayerLoading.value) {
+    return '加载中';
+  }
+
+  if (!roadDataSource.value) {
+    return '加载道路';
+  }
+
+  return roadLayerShown.value ? '隐藏道路' : '显示道路';
+});
+
 const depthPointLabel = computed(() => {
   const point = selectedFloodDepthPoint.value;
   if (!point) {
@@ -496,12 +562,26 @@ const refreshBuildingColors = () => {
   void analyzeBuildingFlooding();
 };
 
+const refreshRoadColors = () => {
+  if (!roadDataSource.value || !roadLayerShown.value) {
+    return;
+  }
+
+  void analyzeRoadFlooding();
+};
+
 const sleep = (durationMs = 0) => new Promise<void>((resolve) => {
   window.setTimeout(resolve, durationMs);
 });
 
 const showBuildingLoadMessage = async (message: string) => {
   buildingLayerMessage.value = message;
+  await nextTick();
+  await sleep(16);
+};
+
+const showRoadLoadMessage = async (message: string) => {
+  roadLayerMessage.value = message;
   await nextTick();
   await sleep(16);
 };
@@ -517,6 +597,22 @@ const getPolygonRings = (geometry?: BuildingFootprintGeometry | null) => {
 
   if (geometry.type === 'MultiPolygon') {
     return geometry.coordinates as number[][][][];
+  }
+
+  return [];
+};
+
+const getRoadLineStrings = (geometry?: RoadGeometry | null) => {
+  if (!geometry) {
+    return [];
+  }
+
+  if (geometry.type === 'LineString') {
+    return [geometry.coordinates as number[][]];
+  }
+
+  if (geometry.type === 'MultiLineString') {
+    return geometry.coordinates as number[][][];
   }
 
   return [];
@@ -618,6 +714,33 @@ const getFeatureBounds = (feature: BuildingFootprintFeature): BuildingViewBounds
   return { west, east, south, north };
 };
 
+const getRoadFeatureBounds = (feature: RoadFeature): BuildingViewBounds | null => {
+  let west = Number.POSITIVE_INFINITY;
+  let east = Number.NEGATIVE_INFINITY;
+  let south = Number.POSITIVE_INFINITY;
+  let north = Number.NEGATIVE_INFINITY;
+
+  getRoadLineStrings(feature.geometry).forEach((line) => {
+    line.forEach((coordinate) => {
+      const longitude = Number(coordinate[0]);
+      const latitude = Number(coordinate[1]);
+      if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
+        return;
+      }
+      west = Math.min(west, longitude);
+      east = Math.max(east, longitude);
+      south = Math.min(south, latitude);
+      north = Math.max(north, latitude);
+    });
+  });
+
+  if (![west, east, south, north].every(Number.isFinite)) {
+    return null;
+  }
+
+  return { west, east, south, north };
+};
+
 const boundsIntersect = (a: BuildingViewBounds, b: BuildingViewBounds) => (
   a.west <= b.east &&
   a.east >= b.west &&
@@ -627,6 +750,11 @@ const boundsIntersect = (a: BuildingViewBounds, b: BuildingViewBounds) => (
 
 const isFeatureInCameraBounds = (feature: BuildingFootprintFeature, cameraBounds: BuildingViewBounds) => {
   const featureBounds = getFeatureBounds(feature);
+  return featureBounds ? boundsIntersect(featureBounds, cameraBounds) : false;
+};
+
+const isRoadFeatureInCameraBounds = (feature: RoadFeature, cameraBounds: BuildingViewBounds) => {
+  const featureBounds = getRoadFeatureBounds(feature);
   return featureBounds ? boundsIntersect(featureBounds, cameraBounds) : false;
 };
 
@@ -672,6 +800,43 @@ const setBuildingEntityColor = (entity: Cesium.Entity, color: Cesium.Color) => {
   entity.polygon.material = new Cesium.ColorMaterialProperty(color);
 };
 
+const setRoadEntityColor = (entity: Cesium.Entity, color: Cesium.Color) => {
+  if (!entity.polyline) {
+    return;
+  }
+
+  entity.polyline.material = new Cesium.PolylineOutlineMaterialProperty({
+    color,
+    outlineColor: ROAD_OUTLINE_COLOR,
+    outlineWidth: 1
+  });
+};
+
+const getRoadClass = (feature: RoadFeature) => String(feature.properties?.fclass ?? '').toLowerCase();
+
+const getRoadVisualStyle = (feature: RoadFeature) => {
+  const roadClass = getRoadClass(feature);
+
+  if (roadClass.includes('primary') || roadClass.includes('trunk')) {
+    return {
+      color: ROAD_PRIMARY_COLOR,
+      width: ROAD_WIDTH_PX + 1.2
+    };
+  }
+
+  if (roadClass.includes('secondary') || roadClass.includes('tertiary')) {
+    return {
+      color: ROAD_SECONDARY_COLOR,
+      width: ROAD_WIDTH_PX + 0.6
+    };
+  }
+
+  return {
+    color: ROAD_LOCAL_COLOR,
+    width: ROAD_WIDTH_PX
+  };
+};
+
 const addBuildingLayerEntity = (
   dataSource: Cesium.CustomDataSource,
   feature: BuildingFootprintFeature,
@@ -694,6 +859,40 @@ const addBuildingLayerEntity = (
       closeBottom: true,
       material: BUILDING_DEFAULT_COLOR,
       outline: false
+    }
+  });
+};
+
+const addRoadLayerEntity = (
+  dataSource: Cesium.CustomDataSource,
+  feature: RoadFeature,
+  line: number[][]
+): Cesium.Entity | null => {
+  const positions = line
+    .map((coordinate) => {
+      const longitude = Number(coordinate[0]);
+      const latitude = Number(coordinate[1]);
+      return Number.isFinite(longitude) && Number.isFinite(latitude)
+        ? Cesium.Cartesian3.fromDegrees(longitude, latitude, 1.2)
+        : null;
+    })
+    .filter((position): position is Cesium.Cartesian3 => position !== null);
+
+  if (positions.length < 2) {
+    return null;
+  }
+
+  const style = getRoadVisualStyle(feature);
+  return dataSource.entities.add({
+    polyline: {
+      positions,
+      width: style.width,
+      material: new Cesium.PolylineOutlineMaterialProperty({
+        color: style.color,
+        outlineColor: ROAD_OUTLINE_COLOR,
+        outlineWidth: 1
+      }),
+      clampToGround: true
     }
   });
 };
@@ -746,6 +945,88 @@ const analyzeBuildingFlooding = async () => {
     buildingLayerMessage.value = message;
   } finally {
     buildingLayerLoading.value = false;
+  }
+};
+
+const analyzeRoadFeatureFlooding = (feature: RoadFeature, floodJson: any) => {
+  let maxDepthM = 0;
+  let sampled = false;
+
+  getRoadLineStrings(feature.geometry).forEach((line) => {
+    line.forEach((coordinate) => {
+      const longitude = Number(coordinate[0]);
+      const latitude = Number(coordinate[1]);
+      if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
+        return;
+      }
+
+      const worldPosition = Cesium.Cartesian3.fromDegrees(longitude, latitude);
+      const gridPoint = DrawTriangleMesh.worldToFloodGrid(worldPosition);
+      if (!gridPoint) {
+        return;
+      }
+
+      const sample = sampleFloodDepthAtGridPoint(floodJson, gridPoint.x, gridPoint.y);
+      sampled = true;
+      maxDepthM = Math.max(maxDepthM, sample.depthM);
+    });
+  });
+
+  return {
+    flooded: sampled && maxDepthM > 0,
+    sampled,
+    depthM: maxDepthM
+  };
+};
+
+const analyzeRoadFlooding = async () => {
+  const viewer = props.viewer;
+  const dataSource = roadDataSource.value;
+  const floodJson = lastLoadedFloodJson.value;
+
+  if (!viewer || !dataSource || !roadLayerShown.value) {
+    roadLayerMessage.value = '请先加载并显示道路';
+    return;
+  }
+
+  if (!floodJson || !DrawTriangleMesh.getCurrentModelMatrix()) {
+    roadLayerMessage.value = '请先播放洪水案例，播放完成后再进行道路淹没分析';
+    return;
+  }
+
+  roadLayerLoading.value = true;
+  await showRoadLoadMessage('正在按当前洪水帧更新道路淹没颜色...');
+
+  try {
+    let total = 0;
+    let flooded = 0;
+    roadFeatureEntityRecords.forEach((record) => {
+      const analysis = analyzeRoadFeatureFlooding(record.feature, floodJson);
+      if (!analysis.sampled) {
+        return;
+      }
+
+      total += 1;
+      if (analysis.flooded) {
+        flooded += 1;
+      }
+
+      const color = analysis.flooded ? ROAD_FLOODED_COLOR : ROAD_SAFE_COLOR;
+      record.entities.forEach((entity) => setRoadEntityColor(entity, color));
+    });
+
+    roadStats.value = {
+      total,
+      flooded,
+      safe: Math.max(0, total - flooded)
+    };
+    roadLayerMessage.value = `道路淹没分析完成：采用当前已加载洪水帧 ${currentFloodFrame.value || '--'}，淹没 ${flooded}/${total} 条`;
+    viewer.scene.requestRender();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '道路淹没分析失败';
+    roadLayerMessage.value = message;
+  } finally {
+    roadLayerLoading.value = false;
   }
 };
 
@@ -833,6 +1114,99 @@ const toggleOsmBuildings = async () => {
   }
 };
 
+const toggleRoadLayer = async () => {
+  const viewer = props.viewer;
+  if (!viewer || roadLayerLoading.value) {
+    if (!viewer) {
+      roadLayerMessage.value = '地图尚未准备好';
+    }
+    return;
+  }
+
+  if (roadDataSource.value) {
+    const nextShown = !roadLayerShown.value;
+    roadDataSource.value.show = nextShown;
+    roadLayerShown.value = nextShown;
+    roadLayerMessage.value = nextShown ? '道路图层已显示' : '道路图层已隐藏';
+    viewer.scene.requestRender();
+    return;
+  }
+
+  roadLayerLoading.value = true;
+  await showRoadLoadMessage(`开始加载${ROAD_LAYER_LABEL}...`);
+
+  try {
+    const cameraBounds = getCurrentCameraBounds(viewer);
+    if (!cameraBounds) {
+      throw new Error('无法获取当前相机视野范围，请先把镜头对准地表后再加载道路');
+    }
+
+    await showRoadLoadMessage('正在读取肖家桥道路数据...');
+    const response = await fetch(ROAD_GEOJSON_URL, { cache: 'no-cache' });
+    if (!response.ok) {
+      throw new Error(`道路数据读取失败：${response.status}`);
+    }
+
+    const geojson = await response.json() as RoadCollection;
+    const dataSource = new Cesium.CustomDataSource('xiaojiaqiao_roads');
+    let lineCount = 0;
+    const featureEntityRecords: RoadFeatureEntityRecord[] = [];
+
+    geojson.features.forEach((feature) => {
+      if (!isRoadFeatureInCameraBounds(feature, cameraBounds)) {
+        return;
+      }
+
+      const entities: Cesium.Entity[] = [];
+      getRoadLineStrings(feature.geometry).forEach((line) => {
+        const entity = addRoadLayerEntity(dataSource, feature, line);
+        if (entity) {
+          entities.push(entity);
+          lineCount += 1;
+        }
+      });
+
+      if (entities.length) {
+        featureEntityRecords.push({ feature, entities });
+      }
+    });
+
+    if (isPanelDisposed || props.viewer !== viewer) {
+      dataSource.entities.removeAll();
+      return;
+    }
+
+    await showRoadLoadMessage('正在添加肖家桥道路图层...');
+    await viewer.dataSources.add(dataSource);
+    roadDataSource.value = dataSource;
+    roadFeatureEntityRecords = featureEntityRecords;
+    roadLayerShown.value = true;
+    roadStats.value = { total: 0, flooded: 0, safe: 0 };
+    roadLayerMessage.value = `${ROAD_LAYER_LABEL}已加载：当前视野内 ${featureEntityRecords.length} 条道路、${lineCount} 条线段`;
+    viewer.scene.requestRender();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '道路图层加载失败';
+    roadLayerMessage.value = message;
+  } finally {
+    roadLayerLoading.value = false;
+  }
+};
+
+const destroyRoadLayer = () => {
+  const dataSource = roadDataSource.value;
+  const viewer = props.viewer;
+  if (dataSource && viewer) {
+    viewer.dataSources.remove(dataSource, true);
+    viewer.scene.requestRender();
+  }
+
+  roadDataSource.value = null;
+  roadFeatureEntityRecords = [];
+  roadLayerShown.value = false;
+  roadLayerLoading.value = false;
+  roadStats.value = { total: 0, flooded: 0, safe: 0 };
+};
+
 const destroyOsmBuildings = () => {
   const dataSource = buildingDataSource.value;
   const viewer = buildingLayerViewer ?? props.viewer;
@@ -860,6 +1234,7 @@ onBeforeUnmount(() => {
   stopDepthPick();
   removeDepthMarker();
   destroyOsmBuildings();
+  destroyRoadLayer();
 });
 </script>
 
@@ -992,6 +1367,30 @@ onBeforeUnmount(() => {
       </div>
 
       <p v-if="buildingLayerMessage" class="point-message">{{ buildingLayerMessage }}</p>
+    </div>
+
+    <div class="analysis-block road-block">
+      <div class="block-heading">
+        <span>道路淹没分析</span>
+        <b>{{ roadLayerStatus }}</b>
+      </div>
+
+      <div class="point-toolbar building-toolbar">
+        <button type="button" class="point-btn primary" :disabled="roadLayerLoading" @click="toggleRoadLayer">
+          {{ roadToggleLabel }}
+        </button>
+        <button type="button" class="point-btn" :disabled="!roadLayerShown || roadLayerLoading" @click="refreshRoadColors()">
+          淹没分析
+        </button>
+      </div>
+
+      <div class="building-legend">
+        <span class="building-chip flooded"><i></i>淹没</span>
+        <span class="building-chip safe"><i></i>未淹没</span>
+        <strong>{{ roadStats.total ? `${roadStats.flooded}/${roadStats.total}` : '--' }}</strong>
+      </div>
+
+      <p v-if="roadLayerMessage" class="point-message">{{ roadLayerMessage }}</p>
     </div>
 
     <div class="latest-strip">
