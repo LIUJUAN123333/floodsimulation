@@ -6,3 +6,4 @@ backend/outputs/
 *.asc
 data_showcase/
 ../data_showcase/
+public/data/showcase/*/files/

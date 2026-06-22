@@ -127,8 +127,6 @@ const SHOWCASE_STATS_INTERVAL_FRAMES = 4;
 const SHOWCASE_UI_INTERVAL_FRAMES = 4;
 const SHOWCASE_FIRST_FRAME_WARMUP_FRAMES = 3;
 const SHOWCASE_PREFETCH_CONCURRENCY = 6;
-const SHOWCASE_STARTUP_BUFFER_COUNT = 200;
-const SHOWCASE_STARTUP_BUFFER_BYTES = 80* MB;
 const SHOWCASE_CACHE_BACK_FRAMES = 20;
 const SHOWCASE_CACHE_AHEAD_FRAMES = 180;
 const activeShowcaseFetchControllers = new Set<AbortController>();
@@ -323,44 +321,30 @@ const fetchShowcaseJson = async (url: string) => {
   }
 };
 
-const getShowcaseDebugOffsetQuery = () => {
-  const params = new URLSearchParams(window.location.search);
-  const queryParams = new URLSearchParams();
-  const offsetMap = [
-    ['showcaseDx', 'dx'],
-    ['showcaseDy', 'dy'],
-    ['showcaseDz', 'dz'],
-    ['showcaseHeading', 'heading']
-  ];
-
-  for (const [sourceKey, targetKey] of offsetMap) {
-    const value = params.get(sourceKey);
-    if (value !== null && Number.isFinite(Number(value))) {
-      queryParams.set(targetKey, value);
-    }
-  }
-
-  const query = queryParams.toString();
-  return query ? `?${query}` : '';
-};
-
 const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId, manifest?: ShowcaseManifest): ShowcasePlaybackOptions => {
   const frameSizes = manifest?.floodFrameSizes;
   const baseOptions = {
-    initialBufferBytes: 300 * MB,
-    prefetchBytes: 80 * MB,
-    startupBufferCount: SHOWCASE_STARTUP_BUFFER_COUNT,
-    startupBufferBytes: SHOWCASE_STARTUP_BUFFER_BYTES,
+    initialBufferCount: 8,
+    prefetchCount: 8,
+    initialBufferBytes: 24 * MB,
+    prefetchBytes: 40 * MB,
+    startupBufferCount: 0,
+    startupBufferBytes: 0,
     statsIntervalFrames: SHOWCASE_STATS_INTERVAL_FRAMES,
     uiIntervalFrames: SHOWCASE_UI_INTERVAL_FRAMES,
     frameSizes
   };
 
+  if (caseId === 'xiaojiaqiao') {
+    return {
+      ...baseOptions,
+      frameIntervalMs: 10
+    };
+  }
+
   if (caseId === 'jinshajiang') {
     return {
       ...baseOptions,
-      initialBufferCount: 48,
-      prefetchCount: 16,
       frameIntervalMs: 8
     };
   }
@@ -368,26 +352,12 @@ const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId, manifest?: ShowcaseM
   if (caseId === 'bonn') {
     return {
       ...baseOptions,
-      initialBufferCount: 16,
-      prefetchCount: 6,
       frameIntervalMs: 10
-    };
-  }
-
-  const maxFrameBytes = manifest?.maxJsonBytes ?? 0;
-  if (maxFrameBytes > 20 * MB) {
-    return {
-      ...baseOptions,
-      initialBufferCount: 120,
-      prefetchCount: 30,
-      frameIntervalMs: 12
     };
   }
 
   return {
     ...baseOptions,
-    initialBufferCount: 120,
-    prefetchCount: 30,
     frameIntervalMs: 12
   };
 };
@@ -1091,9 +1061,17 @@ const renderPrefetchedFloodFrames = async (
   showcasePlayback.currentIndex = index;
   showcasePlayback.sliderIndex = index;
   prefetchFrames(index, options.initialBufferCount, options.initialBufferBytes);
-  coordMessage.value = '正在缓存前段关键帧...';
-  await warmStartupFrames(index);
-  coordMessage.value = '前段关键帧已就绪，正在播放案例数据...';
+  if (options.startupBufferCount > 0 && options.startupBufferBytes > 0) {
+    coordMessage.value = '正在缓存前段关键帧...';
+    await warmStartupFrames(index);
+    coordMessage.value = '前段关键帧已就绪，正在播放案例数据...';
+  } else {
+    showcasePlayback.cacheLoadedFrames = 0;
+    showcasePlayback.cacheTargetFrames = 0;
+    showcasePlayback.cacheLoadedBytes = 0;
+    showcasePlayback.cacheTargetBytes = 0;
+    coordMessage.value = '正在读取首帧并开始播放...';
+  }
 
   while (index < floodUrls.length) {
     if (!isPlaybackCurrent(token)) {
@@ -1218,7 +1196,8 @@ const playShowcase = async (
 
   try {
     coordMessage.value = '正在读取案例数据...';
-    const manifest = await fetchJson(`http://localhost:5000/api/showcase/${caseId}/manifest${getShowcaseDebugOffsetQuery()}`) as ShowcaseManifest;
+    const manifestUrl = `/data/showcase/${caseId}/manifest.json`;
+    const manifest = await fetchJson(manifestUrl) as ShowcaseManifest;
     if (!manifest.success) {
       throw new Error(manifest.message || '案例清单读取失败');
     }

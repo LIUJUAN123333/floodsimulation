@@ -453,10 +453,10 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 
 .scene-effects-entry {
   position: absolute;
-  top: 110px;
-  left: 82px;
+  top: 50%;
+  left: 24px;
   z-index: 10030;
-  transform: none;
+  transform: translateY(-50%);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -576,7 +576,7 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 .scene-effects-enter-from,
 .scene-effects-leave-to {
   opacity: 0;
-  transform: translateX(-16px);
+  transform: translate(-16px, -50%);
 }
 
 .scene-effects-panel-enter-active,
