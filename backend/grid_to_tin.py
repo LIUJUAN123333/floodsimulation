@@ -131,8 +131,8 @@ def build_vectors_and_depths(
 
     for i, j in positions:
         z = float(grid_dem[i, j])
-        # depth_val = round(float(grid_depth[i, j]), 1)
-        depth_val = int(float(grid_depth[i, j]))
+        depth_val = round(float(grid_depth[i, j]), 1)
+        # depth_val = int(float(grid_depth[i, j]))
         vectors.extend([float(i), float(j), float(z)])
         depths.append(depth_val)
         if depth_val < min_depth:

@@ -57,6 +57,13 @@ SHOWCASE_CASES = {
         'heading_offset_degrees': 0,
         'cell_size': 20
     },
+    'yongchuan': {
+        'name': '永川',
+        'directory': os.path.join(SHOWCASE_ROOT, 'yongchuan'),
+        'utm_zone': 48,
+        'asc_file': 'Yongchuan_DEM_20m_48N (2).asc',
+        'xml_file': 'Flood_New.xml'
+    },
     'xiaojiaqiao': {
         'name': '肖家桥',
         'directory': os.path.join(SHOWCASE_ROOT, 'xiaojiaqiao'),

@@ -34,6 +34,14 @@ const emit = defineEmits(['viewer-ready', 'fly-complete']);
 const mousePosition = ref({ lon: '0.000000', lat: '0.000000', height: '0.00' });
 const showCoordinates = ref(false);
 
+const configureCameraControls = (viewerInstance: Viewer) => {
+  const controller = viewerInstance.scene.screenSpaceCameraController;
+  controller.inertiaZoom = 0.35;
+  controller.minimumZoomDistance = 40;
+  controller.maximumZoomDistance = 28000000;
+  controller.maximumMovementRatio = 0.035;
+};
+
 onMounted(async () => {
   if (cesiumContainer.value) {
     let terrainProvider;
@@ -62,6 +70,8 @@ onMounted(async () => {
         }
       }
     });
+
+    configureCameraControls(viewer);
 
     // Initial far view (dark space) replacing setView to 10000000
     viewer.camera.setView({

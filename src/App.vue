@@ -19,6 +19,7 @@ import {
   floodCellSize,
   currentFloodPrimitive,
   floodPlaybackToken,
+  currentShowcaseCaseId,
   clearFloodDepthMonitorPoint,
   resetFloodAreaSeries
 } from './store/floodState';
@@ -146,6 +147,7 @@ const onRiverRunoffComplete = () => {
     return;
   }
   panelVisible.value = false;
+  currentShowcaseCaseId.value = 'xiaojiaqiao';
   floodLoaderRef.value.playShowcase('xiaojiaqiao');
 };
 
@@ -153,7 +155,7 @@ const onRiverRunoffRainstormChange = (active: boolean) => {
   runoffRainstormActive.value = active;
 };
 
-type GalleryShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
+type GalleryShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
 
 const onShowcase = (caseId: GalleryShowcaseCaseId) => {
   if (!floodLoaderRef.value) {
@@ -162,12 +164,14 @@ const onShowcase = (caseId: GalleryShowcaseCaseId) => {
   }
 
   panelVisible.value = false;
+  currentShowcaseCaseId.value = caseId;
   floodLoaderRef.value.playShowcase(caseId);
 };
 
 const resetFloodScene = () => {
   clearTimeout(hideTimeout);
   floodPlaybackToken.value += 1;
+  currentShowcaseCaseId.value = null;
   floodLoaderRef.value?.resetFloodData();
 
   if (viewer.value) {
@@ -291,7 +295,7 @@ const onFlyComplete = () => { showUI.value = true; };
     <!-- 2. 灾害模板右侧的高级展示面板 (与TopBar联动) -->
     <transition :name="sidePanelTransitionName">
       <TemplatePanel
-        v-show="showUI && panelVisible && !isStandalonePanelActive"
+        v-if="showUI && panelVisible && !isStandalonePanelActive"
         :class="{
           'monitor-panel-shell': activePanelId === 'monitor',
           'info-panel-shell': activePanelId === 'intro' || activePanelId === 'help'

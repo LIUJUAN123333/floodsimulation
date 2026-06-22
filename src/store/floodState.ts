@@ -38,6 +38,7 @@ type FloodDepthSampleResult = {
 };
 
 export const lastLoadedFloodJson = shallowRef<any>(null);
+export const currentShowcaseCaseId = ref<string | null>(null);
 export const floodCellSize = ref<number>(0);
 export const currentFloodPrimitive = shallowRef<Cesium.Primitive | null>(null);
 export const floodPlaybackToken = ref<number>(0);

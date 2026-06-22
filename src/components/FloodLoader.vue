@@ -5,6 +5,7 @@ import DrawTriangleMesh from '../js/DrawTriangleMesh';
 import * as proj4 from 'proj4';
 import {
   lastLoadedFloodJson,
+  currentShowcaseCaseId,
   floodCellSize,
   currentFloodPrimitive,
   floodPlaybackToken,
@@ -42,7 +43,7 @@ const parsedCellsize = ref<number | null>(null);
 const coordMessage = ref('');
 const floodFiles = ref<File[]>([]);
 
-type ShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
+type ShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
 
 type ShowcaseManifest = {
   success: boolean;
@@ -85,7 +86,14 @@ type ShowcaseManifest = {
 type ShowcasePlaybackOptions = {
   initialBufferCount: number;
   prefetchCount: number;
+  initialBufferBytes: number;
+  prefetchBytes: number;
+  startupBufferCount: number;
+  startupBufferBytes: number;
   frameIntervalMs: number;
+  statsIntervalFrames: number;
+  uiIntervalFrames: number;
+  frameSizes?: number[];
 };
 
 type ShowcasePlaybackStatus = 'idle' | 'buffering' | 'playing' | 'paused' | 'seeking' | 'ended';
@@ -109,7 +117,20 @@ type LonLatBounds = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+const waitForFrames = async (frameCount: number) => {
+  for (let index = 0; index < frameCount; index += 1) {
+    await nextFrame();
+  }
+};
 const MB = 1024 * 1024;
+const SHOWCASE_STATS_INTERVAL_FRAMES = 4;
+const SHOWCASE_UI_INTERVAL_FRAMES = 4;
+const SHOWCASE_FIRST_FRAME_WARMUP_FRAMES = 3;
+const SHOWCASE_PREFETCH_CONCURRENCY = 6;
+const SHOWCASE_STARTUP_BUFFER_COUNT = 200;
+const SHOWCASE_STARTUP_BUFFER_BYTES = 80* MB;
+const SHOWCASE_CACHE_BACK_FRAMES = 20;
+const SHOWCASE_CACHE_AHEAD_FRAMES = 180;
 const activeShowcaseFetchControllers = new Set<AbortController>();
 const showcaseDockRef = ref<HTMLElement | null>(null);
 
@@ -121,6 +142,10 @@ const showcasePlayback = reactive({
   currentIndex: 0,
   sliderIndex: 0,
   totalFrames: 0,
+  cacheLoadedFrames: 0,
+  cacheTargetFrames: 0,
+  cacheLoadedBytes: 0,
+  cacheTargetBytes: 0,
   pendingSeekIndex: null as number | null,
   resumeAfterSeek: true,
   pauseAfterNextFrame: false
@@ -165,6 +190,16 @@ const showcaseFrameLabel = computed(() => {
   return `${showcaseTimelineIndex.value + 1} / ${showcasePlayback.totalFrames}`;
 });
 const showcaseEvolutionTimeLabel = computed(() => formatShowcaseElapsedTime(showcaseTimelineIndex.value));
+const showcaseCachePercent = computed(() => (
+  showcasePlayback.cacheTargetFrames > 0
+    ? Math.min(100, Math.round((showcasePlayback.cacheLoadedFrames / showcasePlayback.cacheTargetFrames) * 100))
+    : 0
+));
+const showcaseCacheBytesLabel = computed(() => {
+  const loaded = formatBytes(showcasePlayback.cacheLoadedBytes) || '0 B';
+  const target = formatBytes(showcasePlayback.cacheTargetBytes);
+  return target ? `${loaded} / ${target}` : loaded;
+});
 const showcaseStatusText = computed(() => {
   const statusMap: Record<ShowcasePlaybackStatus, string> = {
     idle: '待开始',
@@ -310,8 +345,20 @@ const getShowcaseDebugOffsetQuery = () => {
 };
 
 const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId, manifest?: ShowcaseManifest): ShowcasePlaybackOptions => {
+  const frameSizes = manifest?.floodFrameSizes;
+  const baseOptions = {
+    initialBufferBytes: 300 * MB,
+    prefetchBytes: 80 * MB,
+    startupBufferCount: SHOWCASE_STARTUP_BUFFER_COUNT,
+    startupBufferBytes: SHOWCASE_STARTUP_BUFFER_BYTES,
+    statsIntervalFrames: SHOWCASE_STATS_INTERVAL_FRAMES,
+    uiIntervalFrames: SHOWCASE_UI_INTERVAL_FRAMES,
+    frameSizes
+  };
+
   if (caseId === 'jinshajiang') {
     return {
+      ...baseOptions,
       initialBufferCount: 48,
       prefetchCount: 16,
       frameIntervalMs: 8
@@ -320,6 +367,7 @@ const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId, manifest?: ShowcaseM
 
   if (caseId === 'bonn') {
     return {
+      ...baseOptions,
       initialBufferCount: 16,
       prefetchCount: 6,
       frameIntervalMs: 10
@@ -329,15 +377,17 @@ const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId, manifest?: ShowcaseM
   const maxFrameBytes = manifest?.maxJsonBytes ?? 0;
   if (maxFrameBytes > 20 * MB) {
     return {
-      initialBufferCount: 24,
-      prefetchCount: 3,
+      ...baseOptions,
+      initialBufferCount: 120,
+      prefetchCount: 30,
       frameIntervalMs: 12
     };
   }
 
   return {
-    initialBufferCount: 24,
-    prefetchCount: 4,
+    ...baseOptions,
+    initialBufferCount: 120,
+    prefetchCount: 30,
     frameIntervalMs: 12
   };
 };
@@ -869,10 +919,15 @@ const resetFloodData = () => {
   showcasePlayback.visible = false;
   showcasePlayback.status = 'idle';
   showcasePlayback.caseId = null;
+  currentShowcaseCaseId.value = null;
   showcasePlayback.caseName = '';
   showcasePlayback.currentIndex = 0;
   showcasePlayback.sliderIndex = 0;
   showcasePlayback.totalFrames = 0;
+  showcasePlayback.cacheLoadedFrames = 0;
+  showcasePlayback.cacheTargetFrames = 0;
+  showcasePlayback.cacheLoadedBytes = 0;
+  showcasePlayback.cacheTargetBytes = 0;
   showcasePlayback.pendingSeekIndex = null;
   showcasePlayback.resumeAfterSeek = true;
   showcasePlayback.pauseAfterNextFrame = false;
@@ -886,7 +941,8 @@ const renderPrefetchedFloodFrames = async (
   onFirstPrimitive?: (primitive: Cesium.Primitive) => void,
   startIndex = 0
 ) => {
-  const preloadQueue = new Map<string, Promise<any>>();
+  const frameCache = new Map<number, any>();
+  const inFlightFrames = new Map<number, Promise<any>>();
   let firstPrimitive: Cesium.Primitive | null = null;
   let latestPrimitive: Cesium.Primitive | null = null;
   let hasCalledFirstPrimitive = false;
@@ -902,15 +958,120 @@ const renderPrefetchedFloodFrames = async (
     return targetIndex;
   };
 
-  const preloadRange = (startIndex: number, count: number) => {
-    const endIndex = Math.min(floodUrls.length, startIndex + count);
-    for (let i = startIndex; i < endIndex; i += 1) {
-      const url = floodUrls[i];
-      if (!preloadQueue.has(url)) {
-        const preloadPromise = readJsonData(url);
-        preloadPromise.catch(() => undefined);
-        preloadQueue.set(url, preloadPromise);
+  const getBufferedFrameCount = (startIndex: number, maxCount: number, byteBudget: number) => {
+    const remainingFrames = Math.max(0, floodUrls.length - startIndex);
+    const safeMaxCount = Math.min(maxCount, remainingFrames);
+    if (safeMaxCount <= 0) {
+      return 0;
+    }
+
+    const frameSizes = options.frameSizes;
+    if (!frameSizes?.length || byteBudget <= 0) {
+      return safeMaxCount;
+    }
+
+    let totalBytes = 0;
+    let count = 0;
+    for (let index = startIndex; index < startIndex + safeMaxCount; index += 1) {
+      const frameBytes = Math.max(0, Number(frameSizes[index]) || 0);
+      if (count > 0 && totalBytes + frameBytes > byteBudget) {
+        break;
       }
+      totalBytes += frameBytes;
+      count += 1;
+    }
+
+    return Math.max(1, count);
+  };
+
+  const fetchFrame = async (frameIndex: number) => {
+    if (frameCache.has(frameIndex)) {
+      return frameCache.get(frameIndex);
+    }
+
+    const existingPromise = inFlightFrames.get(frameIndex);
+    if (existingPromise) {
+      return existingPromise;
+    }
+
+    const framePromise = readJsonData(floodUrls[frameIndex])
+      .then((jsonData) => {
+        frameCache.set(frameIndex, jsonData);
+        inFlightFrames.delete(frameIndex);
+        return jsonData;
+      })
+      .catch((error) => {
+        inFlightFrames.delete(frameIndex);
+        throw error;
+      });
+
+    inFlightFrames.set(frameIndex, framePromise);
+    return framePromise;
+  };
+
+  const pruneFrameCache = (currentIndex: number) => {
+    const minIndex = Math.max(0, currentIndex - SHOWCASE_CACHE_BACK_FRAMES);
+    const maxIndex = Math.min(floodUrls.length - 1, currentIndex + SHOWCASE_CACHE_AHEAD_FRAMES);
+
+    frameCache.forEach((_, frameIndex) => {
+      if (frameIndex < minIndex || frameIndex > maxIndex) {
+        frameCache.delete(frameIndex);
+      }
+    });
+  };
+
+  const prefetchFrames = (startIndex: number, maxCount: number, byteBudget: number) => {
+    const prefetchCount = getBufferedFrameCount(startIndex, maxCount, byteBudget);
+    const endIndex = Math.min(floodUrls.length, startIndex + prefetchCount);
+    for (let frameIndex = startIndex; frameIndex < endIndex; frameIndex += 1) {
+      if (inFlightFrames.size >= SHOWCASE_PREFETCH_CONCURRENCY) {
+        break;
+      }
+
+      if (frameCache.has(frameIndex) || inFlightFrames.has(frameIndex)) {
+        continue;
+      }
+
+      fetchFrame(frameIndex).catch((error) => {
+        if (!isAbortError(error)) {
+          console.warn('Showcase prefetch failed:', error);
+        }
+      });
+    }
+  };
+
+  const prefetchAhead = (startIndex: number) => {
+    prefetchFrames(startIndex, options.prefetchCount, options.prefetchBytes);
+  };
+
+  const warmStartupFrames = async (startIndex: number) => {
+    const startupCount = getBufferedFrameCount(
+      startIndex,
+      options.startupBufferCount,
+      options.startupBufferBytes
+    );
+    const endIndex = Math.min(floodUrls.length, startIndex + startupCount);
+    const frameSizes = options.frameSizes;
+    const targetBytes = frameSizes?.length
+      ? frameSizes
+        .slice(startIndex, endIndex)
+        .reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0)
+      : options.startupBufferBytes;
+
+    showcasePlayback.cacheLoadedFrames = 0;
+    showcasePlayback.cacheTargetFrames = Math.max(0, endIndex - startIndex);
+    showcasePlayback.cacheLoadedBytes = 0;
+    showcasePlayback.cacheTargetBytes = targetBytes;
+
+    for (let frameIndex = startIndex; frameIndex < endIndex; frameIndex += 1) {
+      if (!isPlaybackCurrent(token) || showcasePlayback.pendingSeekIndex !== null) {
+        return;
+      }
+
+      await fetchFrame(frameIndex);
+      showcasePlayback.cacheLoadedFrames += 1;
+      showcasePlayback.cacheLoadedBytes += Math.max(0, Number(frameSizes?.[frameIndex]) || 0);
+      await nextFrame();
     }
   };
 
@@ -926,36 +1087,13 @@ const renderPrefetchedFloodFrames = async (
     return isPlaybackCurrent(token);
   };
 
-  const bufferFrom = async (bufferStartIndex: number) => {
-    const initialBufferCount = Math.min(floodUrls.length - bufferStartIndex, options.initialBufferCount);
-    preloadRange(bufferStartIndex, initialBufferCount);
-
-    for (let i = bufferStartIndex; i < bufferStartIndex + initialBufferCount; i += 1) {
-      if (!isPlaybackCurrent(token) || showcasePlayback.pendingSeekIndex !== null) {
-        return;
-      }
-
-      const url = floodUrls[i];
-      try {
-        await (preloadQueue.get(url) ?? readJsonData(url));
-      } catch (error) {
-        preloadQueue.delete(url);
-        if (isAbortError(error) && isPlaybackCurrent(token)) {
-          return;
-        }
-        throw error;
-      }
-    }
-  };
-
   let index = clampShowcaseFrameIndex(startIndex);
   showcasePlayback.currentIndex = index;
   showcasePlayback.sliderIndex = index;
-  await bufferFrom(index);
-  if (isPlaybackCurrent(token) && showcasePlayback.status === 'buffering') {
-    showcasePlayback.status = 'playing';
-  }
-  coordMessage.value = '缓冲完成，正在播放案例数据...';
+  prefetchFrames(index, options.initialBufferCount, options.initialBufferBytes);
+  coordMessage.value = '正在缓存前段关键帧...';
+  await warmStartupFrames(index);
+  coordMessage.value = '前段关键帧已就绪，正在播放案例数据...';
 
   while (index < floodUrls.length) {
     if (!isPlaybackCurrent(token)) {
@@ -964,29 +1102,24 @@ const renderPrefetchedFloodFrames = async (
 
     const seekIndex = consumePendingSeekIndex();
     if (seekIndex !== null) {
-      preloadQueue.clear();
+      inFlightFrames.clear();
       index = seekIndex;
       showcasePlayback.currentIndex = index;
       showcasePlayback.sliderIndex = index;
       showcasePlayback.status = 'seeking';
-      await bufferFrom(index);
-      if (!isPlaybackCurrent(token)) {
-        break;
-      }
+      pruneFrameCache(index);
+      prefetchAhead(index);
     }
 
     if (!(await waitUntilPlayable())) {
       break;
     }
 
-    preloadRange(index, options.prefetchCount);
     const url = floodUrls[index];
     let jsonData: any;
     try {
-      jsonData = await (preloadQueue.get(url) ?? readJsonData(url));
-      preloadQueue.delete(url);
+      jsonData = await fetchFrame(index);
     } catch (error) {
-      preloadQueue.delete(url);
       if (isAbortError(error) && isPlaybackCurrent(token)) {
         continue;
       }
@@ -1002,17 +1135,25 @@ const renderPrefetchedFloodFrames = async (
     }
 
     const frameStartedAt = performance.now();
+    const isFirstFrame = index === 0;
+    const isLastFrame = index === floodUrls.length - 1;
+    const shouldUpdateStats = isFirstFrame || isLastFrame || index % options.statsIntervalFrames === 0;
+    const shouldUpdateUi = isFirstFrame || isLastFrame || index % options.uiIntervalFrames === 0;
     lastLoadedFloodJson.value = jsonData;
-    recordFloodAreaPoint(index + 1, jsonData, floodCellSize.value);
-    recordFloodPointDepth(index + 1, jsonData);
+    if (shouldUpdateStats) {
+      recordFloodAreaPoint(index + 1, jsonData, floodCellSize.value);
+      recordFloodPointDepth(index + 1, jsonData);
+    }
     const primitive = DrawTriangleMesh(jsonData);
     removeCurrentFloodPrimitive();
 
     currentFloodPrimitive.value = primitive;
     props.viewer.scene.primitives.add(primitive);
     latestPrimitive = primitive;
-    showcasePlayback.currentIndex = index;
-    showcasePlayback.sliderIndex = index;
+    if (shouldUpdateUi) {
+      showcasePlayback.currentIndex = index;
+      showcasePlayback.sliderIndex = index;
+    }
 
     if (!firstPrimitive) {
       firstPrimitive = primitive;
@@ -1021,12 +1162,23 @@ const renderPrefetchedFloodFrames = async (
     if (!hasCalledFirstPrimitive) {
       hasCalledFirstPrimitive = true;
       onFirstPrimitive?.(primitive);
+      if (isPlaybackCurrent(token) && showcasePlayback.status === 'buffering') {
+        showcasePlayback.status = 'playing';
+        showcasePlayback.cacheTargetFrames = 0;
+      }
+      if (isFirstFrame && isPlaybackCurrent(token)) {
+        coordMessage.value = '首帧已就绪，正在预热渲染管线...';
+        await waitForFrames(SHOWCASE_FIRST_FRAME_WARMUP_FRAMES);
+      }
     }
 
-    if (index === 0 || index === floodUrls.length - 1 || index % progressStep === 0) {
+    if (shouldUpdateUi && (isFirstFrame || isLastFrame || index % progressStep === 0)) {
       coordMessage.value = `正在播放案例数据：${index + 1}/${floodUrls.length}`;
       console.log("Flood data loaded and rendered:", url);
     }
+
+    prefetchAhead(index + 1);
+    pruneFrameCache(index);
 
     if (showcasePlayback.status === 'seeking') {
       showcasePlayback.status = showcasePlayback.resumeAfterSeek ? 'playing' : 'paused';
@@ -1097,10 +1249,15 @@ const playShowcase = async (
     showcasePlayback.visible = true;
     showcasePlayback.status = 'buffering';
     showcasePlayback.caseId = caseId;
+    currentShowcaseCaseId.value = caseId;
     showcasePlayback.caseName = manifest.name;
     showcasePlayback.totalFrames = floodUrls.length;
     showcasePlayback.currentIndex = normalizedStartIndex;
     showcasePlayback.sliderIndex = normalizedStartIndex;
+    showcasePlayback.cacheLoadedFrames = 0;
+    showcasePlayback.cacheTargetFrames = 0;
+    showcasePlayback.cacheLoadedBytes = 0;
+    showcasePlayback.cacheTargetBytes = 0;
     showcasePlayback.pendingSeekIndex = null;
     showcasePlayback.resumeAfterSeek = true;
     showcasePlayback.pauseAfterNextFrame = options.pauseOnFirstFrame ?? false;
@@ -1124,9 +1281,6 @@ const playShowcase = async (
     });
 
     if (isPlaybackCurrent(token)) {
-      if (caseId === 'xiaojiaqiao') {
-        flyToFirstPrimitive(firstShowcasePrimitive, bounds, { legacyView: true });
-      }
       showcasePlayback.status = 'ended';
       showcasePlayback.currentIndex = floodUrls.length - 1;
       showcasePlayback.sliderIndex = floodUrls.length - 1;
@@ -1176,6 +1330,20 @@ defineExpose({ playShowcase, resetFloodData });
             >
               ×
             </button>
+          </div>
+        </div>
+
+        <div v-if="showcasePlayback.status === 'buffering' && showcasePlayback.cacheTargetFrames > 0" class="showcase-cache-progress">
+          <div class="showcase-cache-meta">
+            <span>正在缓存案例数据</span>
+            <strong>{{ showcasePlayback.cacheLoadedFrames }} / {{ showcasePlayback.cacheTargetFrames }} 帧</strong>
+          </div>
+          <div class="showcase-cache-track">
+            <i :style="{ width: `${showcaseCachePercent}%` }"></i>
+          </div>
+          <div class="showcase-cache-foot">
+            <span>{{ showcaseCacheBytesLabel }}</span>
+            <b>{{ showcaseCachePercent }}%</b>
           </div>
         </div>
 
@@ -1475,6 +1643,50 @@ defineExpose({ playShowcase, resetFloodData });
 .showcase-progress-row {
   gap: 12px;
   margin-bottom: 14px;
+}
+
+.showcase-cache-progress {
+  margin: -2px 0 12px;
+  padding: 9px 10px;
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(2, 18, 32, 0.52);
+  box-shadow: inset 0 0 18px rgba(0, 229, 255, 0.06);
+}
+
+.showcase-cache-meta,
+.showcase-cache-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #9eddf1;
+  font-size: 12px;
+}
+
+.showcase-cache-meta strong,
+.showcase-cache-foot b {
+  color: #f7fcff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.showcase-cache-track {
+  position: relative;
+  height: 7px;
+  margin: 8px 0 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.showcase-cache-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #00e5ff, #48f2a6);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.45);
+  transition: width 0.18s ease;
 }
 
 .showcase-progress-row input[type="range"] {
