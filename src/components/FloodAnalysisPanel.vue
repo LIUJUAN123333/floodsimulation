@@ -59,7 +59,6 @@ const CASE_LAYER_CONFIGS: Record<string, CaseLayerConfig> = {
     filterByCamera: false
   }
 };
-const DEFAULT_CASE_LAYER_ID = 'xiaojiaqiao';
 const BUILDING_BASE_HEIGHT_M = 0;
 const BUILDING_MIN_HEIGHT_M = 8;
 const BUILDING_MAX_HEIGHT_M = 38;
@@ -75,42 +74,27 @@ const ROAD_MIN_WIDTH_PX = 1.1;
 const ROAD_NEAR_CAMERA_HEIGHT_M = 8000;
 const ROAD_FAR_CAMERA_HEIGHT_M = 80000;
 const makeSvgDataUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
-const DEPTH_MARKER_PIN_IMAGE = makeSvgDataUrl(`
-<svg xmlns="http://www.w3.org/2000/svg" width="160" height="200" viewBox="0 0 160 200">
-  <defs>
-    <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">
-      <feDropShadow dx="0" dy="8" stdDeviation="6" flood-color="#010a14" flood-opacity="0.85"/>
-    </filter>
-    <linearGradient id="pinGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#ffe58a"/>
-      <stop offset="100%" stop-color="#f6a700"/>
-    </linearGradient>
-    <radialGradient id="pulseGrad" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#ffd36c" stop-opacity="0.6"/>
-      <stop offset="100%" stop-color="#ffd36c" stop-opacity="0"/>
-    </radialGradient>
-  </defs>
+const DEPTH_MARKER_IMAGE = makeSvgDataUrl(`
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="720" viewBox="0 0 160 180">
+  <path
+    d="M80 8 C43 8 18 36 18 72 C18 112 70 154 80 174 C90 154 142 112 142 72 C142 36 117 8 80 8 Z"
+    fill="#ffc338"
+    stroke="#07111b"
+    stroke-width="7"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M80 18 C49 18 29 41 29 72 C29 102 68 136 80 156 C92 136 131 102 131 72 C131 41 111 18 80 18 Z"
+    fill="#ffd85a"
+    stroke="#fff8d2"
+    stroke-width="3"
+    stroke-linejoin="round"
+  />
 
-  <!-- Pulse Base -->
-  <ellipse cx="80" cy="180" rx="60" ry="16" fill="url(#pulseGrad)"/>
-  <ellipse cx="80" cy="180" rx="18" ry="5" fill="#ffffff" opacity="0.9"/>
-  <!-- Stick Base -->
-  <path d="M80 110 L80 180" stroke="#f6a700" stroke-width="8" stroke-linecap="round"/>
-  <path d="M80 110 L80 180" stroke="#fff8d8" stroke-width="3" stroke-linecap="round" opacity="0.85"/>
-
-  <g filter="url(#shadow)">
-    <!-- Bulb Head (Teardrop) -->
-    <path d="M 80 15 C 40 15 15 45 15 80 C 15 115 75 160 78 163 C 79 164 81 164 82 163 C 85 160 145 115 145 80 C 145 45 120 15 80 15 Z" fill="url(#pinGrad)" stroke="#fff8d8" stroke-width="4" stroke-linejoin="round"/>
-    
-    <!-- Inner Dark Circle -->
-    <circle cx="80" cy="70" r="34" fill="#3a2600" stroke="#fff8d8" stroke-width="3"/>
-    
-    <!-- Water Icon inside -->
-    <path d="M 80 44 C 68 56 60 66 60 76 C 60 87 69 96 80 96 C 91 96 100 87 100 76 C 100 66 92 56 80 44 Z" fill="#ffffff"/>
-    
-    <!-- Decorative Highlight -->
-    <path d="M 32 75 A 50 50 0 0 1 80 25" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" opacity="0.6"/>
-  </g>
+  <circle cx="80" cy="66" r="28" fill="#1f1a10" stroke="#fffdf0" stroke-width="5"/>
+  <circle cx="80" cy="66" r="14" fill="#ffffff"/>
+  <circle cx="80" cy="66" r="7" fill="#07111b"/>
+  <path d="M68 48 C74 42 86 42 92 48" fill="none" stroke="#fffdf0" stroke-width="4" stroke-linecap="round"/>
 </svg>
 `);
 
@@ -207,9 +191,12 @@ let buildingLayerViewer: Cesium.Viewer | null = null;
 let previousDepthTestAgainstTerrain: boolean | null = null;
 let isPanelDisposed = false;
 
-const activeLayerConfig = computed(() => (
-  CASE_LAYER_CONFIGS[currentShowcaseCaseId.value ?? ''] ?? CASE_LAYER_CONFIGS[DEFAULT_CASE_LAYER_ID]
+const activeLayerConfig = computed<CaseLayerConfig | null>(() => (
+  CASE_LAYER_CONFIGS[currentShowcaseCaseId.value ?? ''] ?? null
 ));
+const hasSelectedCaseLayer = computed(() => activeLayerConfig.value !== null);
+const activeBuildingLayerLabel = computed(() => activeLayerConfig.value?.buildingLabel ?? '未选择案例');
+const activeRoadLayerLabel = computed(() => activeLayerConfig.value?.roadLabel ?? '未选择案例');
 
 const sortedAreaSeries = computed(() => (
   floodAreaSeries.value
@@ -400,6 +387,13 @@ const depthSampleStatus = computed(() => {
   return '未淹没或超出范围';
 });
 
+const areaSeriesSummaryLabel = computed(() => (
+  latestAreaPoint.value ? `至 ${latestAreaPoint.value.frame} 帧` : '暂无数据'
+));
+const depthSeriesSummaryLabel = computed(() => (
+  latestDepthPoint.value ? `至 ${latestDepthPoint.value.frame} 帧` : depthSampleStatus.value
+));
+
 const buildingLayerStatus = computed(() => {
   if (buildingLayerLoading.value) {
     return '加载中';
@@ -418,10 +412,10 @@ const buildingToggleLabel = computed(() => {
   }
 
   if (!buildingDataSource.value) {
-    return `加载${activeLayerConfig.value.buildingLabel}`;
+    return activeLayerConfig.value ? `加载${activeLayerConfig.value.buildingLabel}` : '请先选择案例';
   }
 
-  return buildingLayerShown.value ? `隐藏${activeLayerConfig.value.buildingLabel}` : `显示${activeLayerConfig.value.buildingLabel}`;
+  return buildingLayerShown.value ? `隐藏${activeBuildingLayerLabel.value}` : `显示${activeBuildingLayerLabel.value}`;
 });
 
 const roadLayerStatus = computed(() => {
@@ -442,10 +436,10 @@ const roadToggleLabel = computed(() => {
   }
 
   if (!roadDataSource.value) {
-    return `加载${activeLayerConfig.value.roadLabel}`;
+    return activeLayerConfig.value ? `加载${activeLayerConfig.value.roadLabel}` : '请先选择案例';
   }
 
-  return roadLayerShown.value ? `隐藏${activeLayerConfig.value.roadLabel}` : `显示${activeLayerConfig.value.roadLabel}`;
+  return roadLayerShown.value ? `隐藏${activeRoadLayerLabel.value}` : `显示${activeRoadLayerLabel.value}`;
 });
 
 const depthPointLabel = computed(() => {
@@ -485,27 +479,11 @@ const updateDepthMarker = () => {
   depthMarker = viewer.entities.add({
     position: Cesium.Cartesian3.fromDegrees(point.lon, point.lat, point.height),
     billboard: {
-      image: DEPTH_MARKER_PIN_IMAGE,
-      width: 40,
-      height: 50,
+      image: DEPTH_MARKER_IMAGE,
+      width: 54,
+      height: 61,
       horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
       verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-      pixelOffset: new Cesium.Cartesian2(0, 2),
-      disableDepthTestDistance: Number.POSITIVE_INFINITY
-    },
-    label: {
-      text: '水深监测',
-      font: 'bold 14px Microsoft YaHei, sans-serif',
-      fillColor: Cesium.Color.WHITE,
-      outlineColor: Cesium.Color.fromCssColorString('#00101d'),
-      outlineWidth: 4,
-      style: Cesium.LabelStyle.FILL_AND_OUTLINE,
-      showBackground: true,
-      backgroundColor: Cesium.Color.fromCssColorString('#031827').withAlpha(0.9),
-      backgroundPadding: new Cesium.Cartesian2(10, 5),
-      horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
-      verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
-      pixelOffset: new Cesium.Cartesian2(0, -60),
       disableDepthTestDistance: Number.POSITIVE_INFINITY
     }
   });
@@ -1122,8 +1100,13 @@ const toggleOsmBuildings = async () => {
     return;
   }
 
-  buildingLayerLoading.value = true;
   const layerConfig = activeLayerConfig.value;
+  if (!layerConfig) {
+    buildingLayerMessage.value = '请先在案例演示中选择并播放案例';
+    return;
+  }
+
+  buildingLayerLoading.value = true;
   await showBuildingLoadMessage(`开始加载${layerConfig.buildingLabel}...`);
 
   try {
@@ -1203,8 +1186,13 @@ const toggleRoadLayer = async () => {
     return;
   }
 
-  roadLayerLoading.value = true;
   const layerConfig = activeLayerConfig.value;
+  if (!layerConfig) {
+    roadLayerMessage.value = '请先在案例演示中选择并播放案例';
+    return;
+  }
+
+  roadLayerLoading.value = true;
   await showRoadLoadMessage(`开始加载${layerConfig.roadLabel}...`);
 
   try {
@@ -1303,7 +1291,7 @@ const destroyOsmBuildings = () => {
 watch(selectedFloodDepthPoint, updateDepthMarker, { immediate: true });
 watch(() => props.viewer, updateDepthMarker);
 watch(
-  () => activeLayerConfig.value.caseId,
+  () => activeLayerConfig.value?.caseId ?? '',
   (_caseId, previousCaseId) => {
     if (!previousCaseId) {
       return;
@@ -1348,7 +1336,7 @@ onBeforeUnmount(() => {
     <div class="analysis-block">
       <div class="block-heading">
         <span>淹没范围变化曲线</span>
-        <b>{{ hasAreaData ? `${sortedAreaSeries.length} 帧` : '暂无数据' }}</b>
+        <b>{{ areaSeriesSummaryLabel }}</b>
       </div>
 
       <div v-if="hasAreaData" class="chart-wrap">
@@ -1383,7 +1371,7 @@ onBeforeUnmount(() => {
     <div class="analysis-block depth-block">
       <div class="block-heading">
         <span>监测点水深变化曲线</span>
-        <b>{{ hasDepthData ? `${sortedDepthSeries.length} 帧` : depthSampleStatus }}</b>
+        <b>{{ depthSeriesSummaryLabel }}</b>
       </div>
 
       <div class="point-toolbar">
@@ -1436,10 +1424,10 @@ onBeforeUnmount(() => {
         <span>建筑物淹没分析</span>
         <b>{{ buildingLayerStatus }}</b>
       </div>
-      <p class="point-message layer-source">当前图层：{{ activeLayerConfig.buildingLabel }}</p>
+      <p class="point-message layer-source">当前图层：{{ activeBuildingLayerLabel }}</p>
 
       <div class="point-toolbar building-toolbar">
-        <button type="button" class="point-btn primary" :disabled="buildingLayerLoading" @click="toggleOsmBuildings">
+        <button type="button" class="point-btn primary" :disabled="!hasSelectedCaseLayer || buildingLayerLoading" @click="toggleOsmBuildings">
           {{ buildingToggleLabel }}
         </button>
         <button type="button" class="point-btn" :disabled="!buildingLayerShown || buildingLayerLoading" @click="refreshBuildingColors()">
@@ -1461,10 +1449,10 @@ onBeforeUnmount(() => {
         <span>道路淹没分析</span>
         <b>{{ roadLayerStatus }}</b>
       </div>
-      <p class="point-message layer-source">当前图层：{{ activeLayerConfig.roadLabel }}</p>
+      <p class="point-message layer-source">当前图层：{{ activeRoadLayerLabel }}</p>
 
       <div class="point-toolbar building-toolbar">
-        <button type="button" class="point-btn primary" :disabled="roadLayerLoading" @click="toggleRoadLayer">
+        <button type="button" class="point-btn primary" :disabled="!hasSelectedCaseLayer || roadLayerLoading" @click="toggleRoadLayer">
           {{ roadToggleLabel }}
         </button>
         <button type="button" class="point-btn" :disabled="!roadLayerShown || roadLayerLoading" @click="refreshRoadColors()">

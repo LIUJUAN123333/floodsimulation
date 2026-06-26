@@ -93,7 +93,20 @@ type ShowcasePlaybackOptions = {
   frameIntervalMs: number;
   statsIntervalFrames: number;
   uiIntervalFrames: number;
+  slowFrameWarningMs: number;
+  cacheBackFrames: number;
+  cacheAheadFrames: number;
+  prefetchConcurrency: number;
+  yieldEveryFrames: number;
+  yieldMs: number;
   frameSizes?: number[];
+};
+
+type ShowcaseFrameSelection = {
+  floodUrls: string[];
+  frameSizes?: number[];
+  stride: number;
+  originalCount: number;
 };
 
 type ShowcasePlaybackStatus = 'idle' | 'buffering' | 'playing' | 'paused' | 'seeking' | 'ended';
@@ -129,6 +142,10 @@ const SHOWCASE_FIRST_FRAME_WARMUP_FRAMES = 3;
 const SHOWCASE_PREFETCH_CONCURRENCY = 6;
 const SHOWCASE_CACHE_BACK_FRAMES = 20;
 const SHOWCASE_CACHE_AHEAD_FRAMES = 180;
+const YONGCHUAN_FULL_RATE_FRAME_COUNT = 900;
+const YONGCHUAN_MID_RATE_FRAME_LIMIT = 2000;
+const YONGCHUAN_MID_FRAME_STRIDE = 5;
+const YONGCHUAN_TAIL_FRAME_STRIDE = 50;
 const activeShowcaseFetchControllers = new Set<AbortController>();
 const showcaseDockRef = ref<HTMLElement | null>(null);
 
@@ -321,8 +338,12 @@ const fetchShowcaseJson = async (url: string) => {
   }
 };
 
-const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId, manifest?: ShowcaseManifest): ShowcasePlaybackOptions => {
-  const frameSizes = manifest?.floodFrameSizes;
+const getShowcasePlaybackOptions = (
+  caseId: ShowcaseCaseId,
+  manifest?: ShowcaseManifest,
+  frameSizesOverride?: number[]
+): ShowcasePlaybackOptions => {
+  const frameSizes = frameSizesOverride ?? manifest?.floodFrameSizes;
   const baseOptions = {
     initialBufferCount: 8,
     prefetchCount: 8,
@@ -332,8 +353,33 @@ const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId, manifest?: ShowcaseM
     startupBufferBytes: 0,
     statsIntervalFrames: SHOWCASE_STATS_INTERVAL_FRAMES,
     uiIntervalFrames: SHOWCASE_UI_INTERVAL_FRAMES,
+    slowFrameWarningMs: 900,
+    cacheBackFrames: SHOWCASE_CACHE_BACK_FRAMES,
+    cacheAheadFrames: SHOWCASE_CACHE_AHEAD_FRAMES,
+    prefetchConcurrency: SHOWCASE_PREFETCH_CONCURRENCY,
+    yieldEveryFrames: 0,
+    yieldMs: 0,
     frameSizes
   };
+
+  if (caseId === 'yongchuan') {
+    return {
+      ...baseOptions,
+      initialBufferCount: 0,
+      prefetchCount: 0,
+      initialBufferBytes: 0,
+      prefetchBytes: 0,
+      frameIntervalMs: 45,
+      statsIntervalFrames: 20,
+      uiIntervalFrames: 5,
+      slowFrameWarningMs: 450,
+      cacheBackFrames: 0,
+      cacheAheadFrames: 1,
+      prefetchConcurrency: 1,
+      yieldEveryFrames: 25,
+      yieldMs: 60
+    };
+  }
 
   if (caseId === 'xiaojiaqiao') {
     return {
@@ -359,6 +405,56 @@ const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId, manifest?: ShowcaseM
   return {
     ...baseOptions,
     frameIntervalMs: 12
+  };
+};
+
+const selectShowcaseFloodFrames = (
+  caseId: ShowcaseCaseId,
+  floodUrls: string[],
+  frameSizes?: number[]
+): ShowcaseFrameSelection => {
+  if (
+    caseId !== 'yongchuan' ||
+    floodUrls.length <= YONGCHUAN_FULL_RATE_FRAME_COUNT
+  ) {
+    return {
+      floodUrls,
+      frameSizes,
+      stride: 1,
+      originalCount: floodUrls.length
+    };
+  }
+
+  const selectedUrls: string[] = [];
+  const selectedSizes: number[] = [];
+
+  const addFrame = (index: number) => {
+    selectedUrls.push(floodUrls[index]);
+    if (frameSizes?.length) {
+      selectedSizes.push(Math.max(0, Number(frameSizes[index]) || 0));
+    }
+  };
+
+  for (let index = 0; index < floodUrls.length; index += 1) {
+    if (
+      index < YONGCHUAN_FULL_RATE_FRAME_COUNT ||
+      (index < YONGCHUAN_MID_RATE_FRAME_LIMIT && index % YONGCHUAN_MID_FRAME_STRIDE === 0) ||
+      index % YONGCHUAN_TAIL_FRAME_STRIDE === 0
+    ) {
+      addFrame(index);
+    }
+  }
+
+  const lastIndex = floodUrls.length - 1;
+  if (selectedUrls[selectedUrls.length - 1] !== floodUrls[lastIndex]) {
+    addFrame(lastIndex);
+  }
+
+  return {
+    floodUrls: selectedUrls,
+    frameSizes: frameSizes?.length ? selectedSizes : undefined,
+    stride: YONGCHUAN_TAIL_FRAME_STRIDE,
+    originalCount: floodUrls.length
   };
 };
 
@@ -980,8 +1076,8 @@ const renderPrefetchedFloodFrames = async (
   };
 
   const pruneFrameCache = (currentIndex: number) => {
-    const minIndex = Math.max(0, currentIndex - SHOWCASE_CACHE_BACK_FRAMES);
-    const maxIndex = Math.min(floodUrls.length - 1, currentIndex + SHOWCASE_CACHE_AHEAD_FRAMES);
+    const minIndex = Math.max(0, currentIndex - options.cacheBackFrames);
+    const maxIndex = Math.min(floodUrls.length - 1, currentIndex + options.cacheAheadFrames);
 
     frameCache.forEach((_, frameIndex) => {
       if (frameIndex < minIndex || frameIndex > maxIndex) {
@@ -994,7 +1090,7 @@ const renderPrefetchedFloodFrames = async (
     const prefetchCount = getBufferedFrameCount(startIndex, maxCount, byteBudget);
     const endIndex = Math.min(floodUrls.length, startIndex + prefetchCount);
     for (let frameIndex = startIndex; frameIndex < endIndex; frameIndex += 1) {
-      if (inFlightFrames.size >= SHOWCASE_PREFETCH_CONCURRENCY) {
+      if (inFlightFrames.size >= options.prefetchConcurrency) {
         break;
       }
 
@@ -1095,6 +1191,7 @@ const renderPrefetchedFloodFrames = async (
 
     const url = floodUrls[index];
     let jsonData: any;
+    const fetchStartedAt = performance.now();
     try {
       jsonData = await fetchFrame(index);
     } catch (error) {
@@ -1113,6 +1210,7 @@ const renderPrefetchedFloodFrames = async (
     }
 
     const frameStartedAt = performance.now();
+    const fetchMs = frameStartedAt - fetchStartedAt;
     const isFirstFrame = index === 0;
     const isLastFrame = index === floodUrls.length - 1;
     const shouldUpdateStats = isFirstFrame || isLastFrame || index % options.statsIntervalFrames === 0;
@@ -1122,11 +1220,15 @@ const renderPrefetchedFloodFrames = async (
       recordFloodAreaPoint(index + 1, jsonData, floodCellSize.value);
       recordFloodPointDepth(index + 1, jsonData);
     }
+    const meshStartedAt = performance.now();
     const primitive = DrawTriangleMesh(jsonData);
+    const meshMs = performance.now() - meshStartedAt;
+    const sceneStartedAt = performance.now();
     removeCurrentFloodPrimitive();
 
     currentFloodPrimitive.value = primitive;
     props.viewer.scene.primitives.add(primitive);
+    const sceneMs = performance.now() - sceneStartedAt;
     latestPrimitive = primitive;
     if (shouldUpdateUi) {
       showcasePlayback.currentIndex = index;
@@ -1154,6 +1256,20 @@ const renderPrefetchedFloodFrames = async (
       coordMessage.value = `正在播放案例数据：${index + 1}/${floodUrls.length}`;
       console.log("Flood data loaded and rendered:", url);
     }
+    const frameWorkMs = performance.now() - frameStartedAt;
+    if (frameWorkMs > options.slowFrameWarningMs) {
+      console.warn(
+        `[Showcase] slow frame ${index + 1}/${floodUrls.length} (${url})`,
+        {
+          fetchMs: Math.round(fetchMs),
+          meshMs: Math.round(meshMs),
+          sceneMs: Math.round(sceneMs),
+          totalMs: Math.round(frameWorkMs),
+          vertices: jsonData?.Depth?.[0]?.length ?? 0,
+          triangles: Math.floor((jsonData?.Face?.length ?? 0) / 3)
+        }
+      );
+    }
 
     prefetchAhead(index + 1);
     pruneFrameCache(index);
@@ -1165,6 +1281,15 @@ const renderPrefetchedFloodFrames = async (
     if (showcasePlayback.pauseAfterNextFrame) {
       showcasePlayback.pauseAfterNextFrame = false;
       showcasePlayback.status = 'paused';
+    }
+
+    if (
+      options.yieldEveryFrames > 0 &&
+      options.yieldMs > 0 &&
+      (index + 1) % options.yieldEveryFrames === 0
+    ) {
+      await sleep(options.yieldMs);
+      await nextFrame();
     }
 
     const waitMs = Math.max(0, options.frameIntervalMs - (performance.now() - frameStartedAt));
@@ -1217,13 +1342,17 @@ const playShowcase = async (
       throw new Error('案例缺少 ASC 文件和中心点配置');
     }
 
-    const floodUrls = manifest.floodUrls?.length
+    const rawFloodUrls = manifest.floodUrls?.length
       ? manifest.floodUrls
       : parseFloodUrlsFromXml(await fetchText(`${manifest.fileBaseUrl}/${encodeFileName(manifest.xmlFile)}`));
-    if (floodUrls.length === 0) {
+    if (rawFloodUrls.length === 0) {
       throw new Error('案例 XML 中没有可播放的洪水帧，请检查 JSON 文件是否存在');
     }
 
+    const frameSelection = selectShowcaseFloodFrames(caseId, rawFloodUrls, manifest.floodFrameSizes);
+    const floodUrls = frameSelection.floodUrls;
+    const optimizedFrameSizes = frameSelection.frameSizes;
+    const optimizedTotalBytes = optimizedFrameSizes?.reduce((sum, size) => sum + size, 0);
     const normalizedStartIndex = Math.min(Math.max(Math.round(startFrameIndex), 0), floodUrls.length - 1);
     showcasePlayback.visible = true;
     showcasePlayback.status = 'buffering';
@@ -1241,11 +1370,14 @@ const playShowcase = async (
     showcasePlayback.resumeAfterSeek = true;
     showcasePlayback.pauseAfterNextFrame = options.pauseOnFirstFrame ?? false;
 
-    const playbackOptions = getShowcasePlaybackOptions(caseId, manifest);
+    const playbackOptions = getShowcasePlaybackOptions(caseId, manifest, optimizedFrameSizes);
     const missingText = manifest.missingJsonCount ? `，跳过缺失 ${manifest.missingJsonCount} 帧` : '';
     const excludedText = manifest.excludedJsonCount ? `，剔除异常 ${manifest.excludedJsonCount} 帧` : '';
-    const sizeText = formatBytes(manifest.totalJsonBytes);
-    coordMessage.value = `正在缓冲 ${manifest.name}：逐帧播放 ${floodUrls.length} 帧${sizeText ? `，约 ${sizeText}` : ''}${missingText}${excludedText}`;
+    const sizeText = formatBytes(optimizedTotalBytes ?? manifest.totalJsonBytes);
+    const optimizedText = frameSelection.stride > 1
+      ? `，分段抽帧 ${frameSelection.originalCount} → ${floodUrls.length} 帧`
+      : '';
+    coordMessage.value = `正在缓冲 ${manifest.name}：逐帧播放 ${floodUrls.length} 帧${optimizedText}${sizeText ? `，约 ${sizeText}` : ''}${missingText}${excludedText}`;
     const jsonBaseDir = manifest.jsonBaseDir || manifest.xmlDir;
     let firstShowcasePrimitive: Cesium.Primitive | null = null;
     await renderPrefetchedFloodFrames(token, floodUrls, (url) => (
@@ -1266,7 +1398,9 @@ const playShowcase = async (
       coordMessage.value = `${manifest.name} 逐帧播放完成：共 ${floodUrls.length} 帧`;
     }
   } catch (error) {
-    console.error("Error loading showcase flood data:", error);
+    if (!isAbortError(error)) {
+      console.error("Error loading showcase flood data:", error);
+    }
     if (isPlaybackCurrent(token)) {
       coordMessage.value = error instanceof Error ? error.message : '案例数据加载失败';
       showcasePlayback.status = isAbortError(error) ? 'ended' : showcasePlayback.status;

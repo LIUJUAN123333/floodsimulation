@@ -67,7 +67,8 @@ import MultiColorTriangleAppearance from './Plugin/MultiColorTriangleAppearance.
             })
         });
 
-        //计算法线的平均值
+        // Cesium's primitive pipeline uses the computed normal data to produce
+        // the compressedAttributes expected by this custom appearance.
         var meshGeo=Cesium.GeometryPipeline.computeNormal(new Cesium.Geometry({
             attributes : attributes,
             indices : triiIndex,

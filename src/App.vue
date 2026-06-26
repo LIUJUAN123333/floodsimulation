@@ -46,7 +46,7 @@ const effectiveRainstormEnabled = computed(() => rainstormEnabled.value || runof
 const isMapReady = ref(false);
 const showUI = ref(false);
 const showV0226CPanels = ref(false); // 新增：控制原V0226C面板的显示
-const systemTitle = '洪水动态模拟与三维可视化系统';
+const systemTitle = '暴雨洪涝动态模拟与三维可视化系统';
 
 // ----------------- TopBar 面板控制 -----------------
 const panelVisible = ref(false);

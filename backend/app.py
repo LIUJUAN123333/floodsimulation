@@ -59,9 +59,9 @@ SHOWCASE_CASES = {
     },
     'yongchuan': {
         'name': '永川',
-        'directory': os.path.join(SHOWCASE_ROOT, 'yongchuan'),
+        'directory': os.path.join(SHOWCASE_ROOT, 'yongchuan2'),
         'utm_zone': 48,
-        'asc_file': 'Yongchuan_DEM_20m_48N (2).asc',
+        'asc_file': 'Yongchuan_DEM_20m_48N.asc',
         'xml_file': 'Flood_New.xml'
     },
     'xiaojiaqiao': {

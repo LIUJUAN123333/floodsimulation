@@ -90,6 +90,7 @@ const emit = defineEmits<{
 }>();
 
 // 导入本地图片
+import imgYongchuan from '../案例图片/永川.png';
 import imgXiaojiaqiao from '../案例图片/肖家桥.png';
 import imgJinsha from '../案例图片/金沙江.png';
 // import imgBonn from '../案例图片/德国波恩.png'; // 提示：请补充图片后取消注释
@@ -99,7 +100,7 @@ const cases = ref([
   {
     id: 'yongchuan',
     title: '永川',
-    img: imgJinsha,
+    img: imgYongchuan,
     desc: '永川案例基于区域 DEM 与洪水演进数据，展示山地丘陵城市在强降雨条件下的地表径流汇集、洪水扩散与淹没过程，可用于对比不同典型地貌下的三维洪水演示效果。',
     tags: ['洪水灾害', '城市内涝', '三维淹没', 'SHOWCASE']
   },
