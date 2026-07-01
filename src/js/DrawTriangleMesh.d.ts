@@ -11,6 +11,27 @@ declare namespace DrawTriangleMesh {
     Vector: number[];
     Face: number[];
   }
+
+  interface CachedMeshData {
+    positions: number[];
+    values: number[];
+    triangles: number[];
+    stats?: {
+      minValue?: number;
+      maxValue?: number;
+    };
+  }
+
+  interface CachedMeshPrimitiveOptions {
+    mesh: CachedMeshData;
+    stats?: CachedMeshData['stats'];
+    alpha?: number;
+    heightScale?: number;
+    surfaceOffset?: number;
+    terrainHeights?: ArrayLike<number>;
+    colorRamp?: Array<string | [number, number, number]>;
+    id?: string;
+  }
 }
 
 declare function DrawTriangleMesh(json: DrawTriangleMesh.FloodMeshData): Cesium.Primitive;
@@ -21,6 +42,7 @@ declare namespace DrawTriangleMesh {
   function setGridCellSize(size: number): void;
   function setHeadingOffsetDegrees(degrees: number): void;
   function getCurrentModelMatrix(): Cesium.Matrix4 | null;
+  function createMeshPrimitive(options: CachedMeshPrimitiveOptions): Cesium.Primitive;
   function worldToFloodGrid(position: Cesium.Cartesian3): {
     x: number;
     y: number;

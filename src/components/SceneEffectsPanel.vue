@@ -2,11 +2,13 @@
 defineProps<{
   rainstormEnabled: boolean;
   riverRunoffEnabled: boolean;
+  floodRenderEnabled: boolean;
 }>();
 
 const emit = defineEmits<{
   toggleRainstorm: [];
   toggleRiverRunoff: [];
+  toggleFloodRender: [];
 }>();
 </script>
 
@@ -64,8 +66,8 @@ const emit = defineEmits<{
       <span>雾效</span>
       <button
         type="button"
-        :class="{ active: riverRunoffEnabled }"
-        @click="emit('toggleRiverRunoff')"
+        :class="{ active: floodRenderEnabled }"
+        @click="emit('toggleFloodRender')"
       >
         洪水渲染
       </button>

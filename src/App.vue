@@ -35,12 +35,15 @@ import DisasterGallery from './components/DisasterGallery.vue';
 const cesiumViewerRef = ref<any>(null); // 新增 Ref
 const floodLoaderRef = ref<InstanceType<typeof FloodLoader> | null>(null);
 const viewer = ref<any>(null);
-const terrainEnabled = ref(true);
+const terrainEnabled = ref(false);
 const terrainSwitching = ref(false);
 const sceneEffectsPanelVisible = ref(false);
 const rainstormEnabled = ref(false);
 const runoffRainstormActive = ref(false);
 const riverRunoffEnabled = ref(false);
+const riverRunoffTriggersFlood = ref(false);
+const riverRunoffEffectKey = ref(0);
+const floodRenderEffectEnabled = computed(() => riverRunoffEnabled.value && riverRunoffTriggersFlood.value);
 const effectiveRainstormEnabled = computed(() => rainstormEnabled.value || runoffRainstormActive.value);
 
 const isMapReady = ref(false);
@@ -120,12 +123,28 @@ const toggleTerrain = async (_event?: Event) => {
     }
     const worldTerrain = await createWorldTerrainAsync();
     viewer.value.terrainProvider = worldTerrain;
+    viewer.value.useDefaultRenderLoop = true;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
     terrainEnabled.value = true;
   } catch (error) {
     console.error('切换地形失败:', error);
+    if (viewer.value) {
+      viewer.value.terrainProvider = new EllipsoidTerrainProvider();
+      viewer.value.useDefaultRenderLoop = true;
+    }
+    terrainEnabled.value = false;
   } finally {
     terrainSwitching.value = false;
   }
+};
+
+const handleTerrainError = (error: unknown) => {
+  console.error('地形渲染异常，已回退到椭球地形:', error);
+  if (viewer.value) {
+    viewer.value.terrainProvider = new EllipsoidTerrainProvider();
+    viewer.value.useDefaultRenderLoop = true;
+  }
+  terrainEnabled.value = false;
 };
 
 const onMenuSelect = (_id: string) => {};
@@ -139,11 +158,28 @@ const toggleRainstorm = () => {
 };
 
 const toggleRiverRunoff = () => {
-  riverRunoffEnabled.value = !riverRunoffEnabled.value;
+  if (riverRunoffEnabled.value && !riverRunoffTriggersFlood.value) {
+    riverRunoffEnabled.value = false;
+    return;
+  }
+  riverRunoffTriggersFlood.value = false;
+  riverRunoffEnabled.value = true;
+  riverRunoffEffectKey.value += 1;
+};
+
+const toggleFloodRenderEffect = () => {
+  if (riverRunoffEnabled.value && riverRunoffTriggersFlood.value) {
+    riverRunoffEnabled.value = false;
+    riverRunoffTriggersFlood.value = false;
+    return;
+  }
+  riverRunoffTriggersFlood.value = true;
+  riverRunoffEnabled.value = true;
+  riverRunoffEffectKey.value += 1;
 };
 
 const onRiverRunoffComplete = () => {
-  if (!riverRunoffEnabled.value || !floodLoaderRef.value) {
+  if (!riverRunoffEnabled.value || !riverRunoffTriggersFlood.value || !floodLoaderRef.value) {
     return;
   }
   panelVisible.value = false;
@@ -195,6 +231,8 @@ const resetFloodScene = () => {
   rainstormEnabled.value = false;
   runoffRainstormActive.value = false;
   riverRunoffEnabled.value = false;
+  riverRunoffTriggersFlood.value = false;
+  riverRunoffEffectKey.value += 1;
   showUI.value = true;
 
   if (cesiumViewerRef.value) {
@@ -223,11 +261,12 @@ const onFlyComplete = () => { showUI.value = true; };
       <TopBar v-show="showUI" :system-title="systemTitle" active-subsystem="flood" @open-panel="openPanel" @reset-ui="resetFloodScene" />
     </transition>
     
-    <CesiumViewer ref="cesiumViewerRef" @viewer-ready="onViewerReady" @fly-complete="onFlyComplete" />
+    <CesiumViewer ref="cesiumViewerRef" @viewer-ready="onViewerReady" @fly-complete="onFlyComplete" @terrain-error="handleTerrainError" />
     <FloodLoader v-if="viewer" ref="floodLoaderRef" class="showcase-flood-loader" :viewer="viewer" />
     <RainstormEffect v-if="viewer" :viewer="viewer" :active="effectiveRainstormEnabled" />
     <RiverRunoffEffect
       v-if="viewer"
+      :key="riverRunoffEffectKey"
       :viewer="viewer"
       :active="riverRunoffEnabled"
       @runoff-complete="onRiverRunoffComplete"
@@ -256,8 +295,10 @@ const onFlyComplete = () => { showUI.value = true; };
             class="scene-effects-flyout"
             :rainstorm-enabled="effectiveRainstormEnabled"
             :river-runoff-enabled="riverRunoffEnabled"
+            :flood-render-enabled="floodRenderEffectEnabled"
             @toggle-rainstorm="toggleRainstorm"
             @toggle-river-runoff="toggleRiverRunoff"
+            @toggle-flood-render="toggleFloodRenderEffect"
           />
         </transition>
       </div>
@@ -305,7 +346,7 @@ const onFlyComplete = () => { showUI.value = true; };
         :subtitle="panelSubtitle"
       >
         <template v-if="showV0226CPanels && activePanelId === 'simulation'">
-          <DataProcessingPanel :viewer="viewer" @menu-select="onMenuSelect" />
+          <DataProcessingPanel :viewer="viewer" :terrain-enabled="terrainEnabled" @menu-select="onMenuSelect" />
         </template>
         <FloodAnalysisPanel v-else-if="activePanelId === 'analysis'" :viewer="viewer" />
         <ProjectIntroPanel v-else-if="activePanelId === 'intro'" />

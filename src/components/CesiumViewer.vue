@@ -4,7 +4,6 @@ import * as Cesium from 'cesium';
 import {
   Viewer,
   Cartesian3,
-  createWorldTerrainAsync,
   EllipsoidTerrainProvider,
   Ion,
   ScreenSpaceEventHandler,
@@ -29,7 +28,7 @@ let roamCurrentHeight = 120;
 let isRoamPaused = false;
 const measurementEntities: Cesium.Entity[] = [];
 const roamEntities: Cesium.Entity[] = [];
-const emit = defineEmits(['viewer-ready', 'fly-complete']);
+const emit = defineEmits(['viewer-ready', 'fly-complete', 'terrain-error']);
 
 const mousePosition = ref({ lon: '0.000000', lat: '0.000000', height: '0.00' });
 const showCoordinates = ref(false);
@@ -46,7 +45,7 @@ onMounted(async () => {
   if (cesiumContainer.value) {
     let terrainProvider;
     try {
-      terrainProvider = await createWorldTerrainAsync();
+      terrainProvider = new EllipsoidTerrainProvider();
     } catch (error) {
       console.warn('地形服务加载失败，回退至基础椭球体无地形模式。如果需要真实地形起伏，请配置 Cesium Ion Token。');
       terrainProvider = new EllipsoidTerrainProvider();
@@ -59,6 +58,7 @@ onMounted(async () => {
       baseLayerPicker: false,
       geocoder: false,
       homeButton: false,
+      showRenderLoopErrors: false,
       infoBox: false,
       selectionIndicator: false,
       sceneModePicker: false,
@@ -79,6 +79,13 @@ onMounted(async () => {
     });
 
     viewer.scene.globe.depthTestAgainstTerrain = true;
+    viewer.scene.renderError.addEventListener((_scene, error) => {
+      if (!viewer) return;
+      console.warn('地形渲染异常，已回退到椭球地形。', error);
+      viewer.terrainProvider = new EllipsoidTerrainProvider();
+      viewer.useDefaultRenderLoop = true;
+      emit('terrain-error', error);
+    });
 
     handler = new ScreenSpaceEventHandler(viewer.scene.canvas);
     handler.setInputAction((movement: any) => {
