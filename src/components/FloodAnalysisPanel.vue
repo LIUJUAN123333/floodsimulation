@@ -211,10 +211,6 @@ const sortedDepthSeries = computed(() => (
 ));
 
 const firstAreaPoint = computed(() => sortedAreaSeries.value[0] ?? null);
-const latestAreaPoint = computed(() => {
-  const series = sortedAreaSeries.value;
-  return series.length ? series[series.length - 1] : null;
-});
 const latestDepthPoint = computed(() => {
   const series = sortedDepthSeries.value;
   return series.length ? series[series.length - 1] : null;
@@ -223,15 +219,16 @@ const latestDepthPoint = computed(() => {
 const hasAreaData = computed(() => sortedAreaSeries.value.length > 0);
 const hasDepthPoint = computed(() => selectedFloodDepthPoint.value !== null);
 const hasDepthData = computed(() => sortedDepthSeries.value.length > 0);
-const latestAreaM2 = computed(() => latestAreaPoint.value?.areaM2 ?? currentFloodAreaM2.value);
+// “当前范围”必须跟随当前实际渲染帧，而不是历史序列中帧号最大的点。
+const latestAreaM2 = computed(() => currentFloodAreaM2.value);
 const maxAreaM2 = computed(() => Math.max(0, ...sortedAreaSeries.value.map((point) => point.areaM2)));
 const minAreaM2 = computed(() => sortedAreaSeries.value.length
   ? Math.min(...sortedAreaSeries.value.map((point) => point.areaM2))
   : 0
 );
 const areaChangeM2 = computed(() => (
-  firstAreaPoint.value && latestAreaPoint.value
-    ? latestAreaPoint.value.areaM2 - firstAreaPoint.value.areaM2
+  firstAreaPoint.value
+    ? currentFloodAreaM2.value - firstAreaPoint.value.areaM2
     : 0
 ));
 const maxDepthM = computed(() => Math.max(0, ...sortedDepthSeries.value.map((point) => point.depthM)));
@@ -388,7 +385,7 @@ const depthSampleStatus = computed(() => {
 });
 
 const areaSeriesSummaryLabel = computed(() => (
-  latestAreaPoint.value ? `至 ${latestAreaPoint.value.frame} 帧` : '暂无数据'
+  currentFloodFrame.value > 0 ? `当前第 ${currentFloodFrame.value} 帧` : '暂无数据'
 ));
 const depthSeriesSummaryLabel = computed(() => (
   latestDepthPoint.value ? `至 ${latestDepthPoint.value.frame} 帧` : depthSampleStatus.value

@@ -1216,8 +1216,9 @@ const renderPrefetchedFloodFrames = async (
     const shouldUpdateStats = isFirstFrame || isLastFrame || index % options.statsIntervalFrames === 0;
     const shouldUpdateUi = isFirstFrame || isLastFrame || index % options.uiIntervalFrames === 0;
     lastLoadedFloodJson.value = jsonData;
+    // 面积属于当前渲染帧的即时指标，拖动、回退和逐帧播放时都必须更新。
+    recordFloodAreaPoint(index + 1, jsonData, floodCellSize.value);
     if (shouldUpdateStats) {
-      recordFloodAreaPoint(index + 1, jsonData, floodCellSize.value);
       recordFloodPointDepth(index + 1, jsonData);
     }
     const meshStartedAt = performance.now();

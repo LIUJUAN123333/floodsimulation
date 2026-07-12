@@ -49,6 +49,7 @@ const effectiveRainstormEnabled = computed(() => rainstormEnabled.value || runof
 const isMapReady = ref(false);
 const showUI = ref(false);
 const showV0226CPanels = ref(false); // 新增：控制原V0226C面板的显示
+const simulationPanelMounted = ref(false);
 const systemTitle = '暴雨洪涝动态模拟与三维可视化系统';
 
 // ----------------- TopBar 面板控制 -----------------
@@ -71,6 +72,12 @@ let hideTimeout: number | undefined;
 
 const isStandalonePanelId = (id: string) => id === 'basic' || id === 'demo';
 const isStandalonePanelActive = computed(() => isStandalonePanelId(activePanelId.value));
+const simulationPanelActive = computed(() => (
+  showUI.value &&
+  panelVisible.value &&
+  showV0226CPanels.value &&
+  activePanelId.value === 'simulation'
+));
 const sidePanelTransitionName = computed(() => (isStandalonePanelActive.value ? 'instant-panel' : 'fade-right'));
 
 const openPanel = (payload: { id: string; title: string }) => {
@@ -92,6 +99,7 @@ const openPanel = (payload: { id: string; title: string }) => {
   panelSubtitle.value = panelContents[payload.id] ?? '';
   
   if (payload.id === 'simulation') {
+    simulationPanelMounted.value = true;
     showV0226CPanels.value = true;
     panelVisible.value = true;
   } else if (isStandalonePanelId(payload.id)) {
@@ -110,6 +118,53 @@ const openPanel = (payload: { id: string; title: string }) => {
 const onViewerReady = (readyViewer: any) => {
   viewer.value = readyViewer;
   isMapReady.value = true;
+  void toggleTerrain();
+};
+
+const SAFE_TERRAIN_MAX_LEVEL = 13;
+
+const guardTerrainAvailability = (terrainProvider: any) => {
+  const availability = terrainProvider?.availability;
+  const computeMaximumLevelAtPosition = availability?.computeMaximumLevelAtPosition;
+  if (typeof computeMaximumLevelAtPosition === 'function') {
+    const originalComputeMaximumLevel = computeMaximumLevelAtPosition.bind(availability);
+    let hasWarnedAboutAvailability = false;
+    availability.computeMaximumLevelAtPosition = (position: any) => {
+      try {
+        return originalComputeMaximumLevel(position);
+      } catch (error) {
+        if (!hasWarnedAboutAvailability) {
+          console.warn('地形可用层级数据异常，已使用安全层级继续加载。', error);
+          hasWarnedAboutAvailability = true;
+        }
+        return SAFE_TERRAIN_MAX_LEVEL;
+      }
+    };
+  }
+
+  const getTileDataAvailable = terrainProvider?.getTileDataAvailable;
+  if (typeof getTileDataAvailable !== 'function') {
+    return terrainProvider;
+  }
+
+  const originalGetTileDataAvailable = getTileDataAvailable.bind(terrainProvider);
+  let hasWarned = false;
+  terrainProvider.getTileDataAvailable = (x: number, y: number, level: number) => {
+    if (level > SAFE_TERRAIN_MAX_LEVEL) {
+      return false;
+    }
+    try {
+      return originalGetTileDataAvailable(x, y, level);
+    } catch (error) {
+      if (!hasWarned) {
+        console.warn('地形瓦片可用性数据异常，已按不可用处理。', error);
+        hasWarned = true;
+      }
+      return false;
+    }
+  };
+
+  return terrainProvider;
 };
 
 const toggleTerrain = async (_event?: Event) => {
@@ -121,7 +176,7 @@ const toggleTerrain = async (_event?: Event) => {
       terrainEnabled.value = false;
       return;
     }
-    const worldTerrain = await createWorldTerrainAsync();
+    const worldTerrain = guardTerrainAvailability(await createWorldTerrainAsync());
     viewer.value.terrainProvider = worldTerrain;
     viewer.value.useDefaultRenderLoop = true;
     await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -334,9 +389,26 @@ const onFlyComplete = () => { showUI.value = true; };
     </transition>
 
     <!-- 2. 灾害模板右侧的高级展示面板 (与TopBar联动) -->
+    <transition name="fade-right">
+      <TemplatePanel
+        v-if="simulationPanelMounted"
+        v-show="simulationPanelActive"
+        side="right"
+        :title="panelTitle"
+        :subtitle="panelSubtitle"
+      >
+        <DataProcessingPanel
+          :viewer="viewer"
+          :terrain-enabled="terrainEnabled"
+          :panel-active="simulationPanelActive"
+          @menu-select="onMenuSelect"
+        />
+      </TemplatePanel>
+    </transition>
+
     <transition :name="sidePanelTransitionName">
       <TemplatePanel
-        v-if="showUI && panelVisible && !isStandalonePanelActive"
+        v-if="showUI && panelVisible && !isStandalonePanelActive && activePanelId !== 'simulation'"
         :class="{
           'monitor-panel-shell': activePanelId === 'monitor',
           'info-panel-shell': activePanelId === 'intro' || activePanelId === 'help'
@@ -345,12 +417,9 @@ const onFlyComplete = () => { showUI.value = true; };
         :title="panelTitle"
         :subtitle="panelSubtitle"
       >
-        <template v-if="showV0226CPanels && activePanelId === 'simulation'">
-          <DataProcessingPanel :viewer="viewer" :terrain-enabled="terrainEnabled" @menu-select="onMenuSelect" />
-        </template>
-        <FloodAnalysisPanel v-else-if="activePanelId === 'analysis'" :viewer="viewer" />
+        <FloodAnalysisPanel v-if="activePanelId === 'analysis'" :viewer="viewer" />
         <ProjectIntroPanel v-else-if="activePanelId === 'intro'" />
-        <MonitoringPanel v-else-if="activePanelId === 'monitor'" />
+        <MonitoringPanel v-else-if="activePanelId === 'monitor'" :viewer="viewer" />
         <HelpPanel v-else-if="activePanelId === 'help'" />
       </TemplatePanel>
     </transition>

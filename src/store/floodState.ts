@@ -80,24 +80,32 @@ export const calculateFloodAreaM2 = (jsonData: any, cellSize: number) => {
   return area * cellSize * cellSize;
 };
 
-export const recordFloodAreaPoint = (frame: number, jsonData: any, cellSize: number) => {
+const recordFloodAreaValue = (frame: number, areaM2: number) => {
   const safeFrame = Math.max(1, Math.round(frame));
   currentFloodFrame.value = safeFrame;
-  const areaM2 = calculateFloodAreaM2(jsonData, cellSize);
-  currentFloodAreaM2.value = areaM2;
+  const safeAreaM2 = Number.isFinite(areaM2) ? Math.max(0, areaM2) : 0;
+  currentFloodAreaM2.value = safeAreaM2;
 
-  const point: FloodAreaPoint = { frame: safeFrame, areaM2 };
+  const point: FloodAreaPoint = { frame: safeFrame, areaM2: safeAreaM2 };
   const existingIndex = floodAreaSeries.value.findIndex((item) => item.frame === safeFrame);
 
   if (existingIndex >= 0) {
     const nextSeries = [...floodAreaSeries.value];
     nextSeries[existingIndex] = point;
     floodAreaSeries.value = nextSeries.sort((a, b) => a.frame - b.frame);
-    return areaM2;
+    return safeAreaM2;
   }
 
   floodAreaSeries.value = [...floodAreaSeries.value, point].sort((a, b) => a.frame - b.frame);
-  return areaM2;
+  return safeAreaM2;
+};
+
+export const recordFloodAreaPoint = (frame: number, jsonData: any, cellSize: number) => {
+  return recordFloodAreaValue(frame, calculateFloodAreaM2(jsonData, cellSize));
+};
+
+export const recordMeshAreaPoint = (frame: number, areaM2: number) => {
+  return recordFloodAreaValue(frame, areaM2);
 };
 
 export const resetFloodAreaSeries = () => {

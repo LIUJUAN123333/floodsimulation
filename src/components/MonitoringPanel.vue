@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import FpsWidget from './FpsWidget.vue';
+import AccuracyEvaluationPanel from './AccuracyEvaluationPanel.vue';
+import type { Viewer } from 'cesium';
+
+withDefaults(defineProps<{
+  viewer?: Viewer | null;
+}>(), {
+  viewer: null
+});
 
 type StationStatus = 'normal' | 'watch' | 'warning';
 
@@ -64,6 +72,7 @@ const statusText: Record<StationStatus, string> = {
 <template>
   <section class="monitor-panel">
     <FpsWidget mode="inline" />
+    <AccuracyEvaluationPanel :viewer="viewer" />
 
     <div class="summary-grid">
       <div class="summary-card">
