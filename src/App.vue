@@ -19,6 +19,7 @@ import {
   floodCellSize,
   currentFloodPrimitive,
   floodPlaybackToken,
+  currentShowcaseCaseId,
   clearFloodDepthMonitorPoint,
   resetFloodAreaSeries
 } from './store/floodState';
@@ -34,18 +35,22 @@ import DisasterGallery from './components/DisasterGallery.vue';
 const cesiumViewerRef = ref<any>(null); // 新增 Ref
 const floodLoaderRef = ref<InstanceType<typeof FloodLoader> | null>(null);
 const viewer = ref<any>(null);
-const terrainEnabled = ref(true);
+const terrainEnabled = ref(false);
 const terrainSwitching = ref(false);
 const sceneEffectsPanelVisible = ref(false);
 const rainstormEnabled = ref(false);
 const runoffRainstormActive = ref(false);
 const riverRunoffEnabled = ref(false);
+const riverRunoffTriggersFlood = ref(false);
+const riverRunoffEffectKey = ref(0);
+const floodRenderEffectEnabled = computed(() => riverRunoffEnabled.value && riverRunoffTriggersFlood.value);
 const effectiveRainstormEnabled = computed(() => rainstormEnabled.value || runoffRainstormActive.value);
 
 const isMapReady = ref(false);
 const showUI = ref(false);
 const showV0226CPanels = ref(false); // 新增：控制原V0226C面板的显示
-const systemTitle = '洪水动态模拟与三维可视化系统';
+const simulationPanelMounted = ref(false);
+const systemTitle = '暴雨洪涝动态模拟与三维可视化系统';
 
 // ----------------- TopBar 面板控制 -----------------
 const panelVisible = ref(false);
@@ -67,6 +72,12 @@ let hideTimeout: number | undefined;
 
 const isStandalonePanelId = (id: string) => id === 'basic' || id === 'demo';
 const isStandalonePanelActive = computed(() => isStandalonePanelId(activePanelId.value));
+const simulationPanelActive = computed(() => (
+  showUI.value &&
+  panelVisible.value &&
+  showV0226CPanels.value &&
+  activePanelId.value === 'simulation'
+));
 const sidePanelTransitionName = computed(() => (isStandalonePanelActive.value ? 'instant-panel' : 'fade-right'));
 
 const openPanel = (payload: { id: string; title: string }) => {
@@ -88,6 +99,7 @@ const openPanel = (payload: { id: string; title: string }) => {
   panelSubtitle.value = panelContents[payload.id] ?? '';
   
   if (payload.id === 'simulation') {
+    simulationPanelMounted.value = true;
     showV0226CPanels.value = true;
     panelVisible.value = true;
   } else if (isStandalonePanelId(payload.id)) {
@@ -106,6 +118,53 @@ const openPanel = (payload: { id: string; title: string }) => {
 const onViewerReady = (readyViewer: any) => {
   viewer.value = readyViewer;
   isMapReady.value = true;
+  void toggleTerrain();
+};
+
+const SAFE_TERRAIN_MAX_LEVEL = 13;
+
+const guardTerrainAvailability = (terrainProvider: any) => {
+  const availability = terrainProvider?.availability;
+  const computeMaximumLevelAtPosition = availability?.computeMaximumLevelAtPosition;
+  if (typeof computeMaximumLevelAtPosition === 'function') {
+    const originalComputeMaximumLevel = computeMaximumLevelAtPosition.bind(availability);
+    let hasWarnedAboutAvailability = false;
+    availability.computeMaximumLevelAtPosition = (position: any) => {
+      try {
+        return originalComputeMaximumLevel(position);
+      } catch (error) {
+        if (!hasWarnedAboutAvailability) {
+          console.warn('地形可用层级数据异常，已使用安全层级继续加载。', error);
+          hasWarnedAboutAvailability = true;
+        }
+        return SAFE_TERRAIN_MAX_LEVEL;
+      }
+    };
+  }
+
+  const getTileDataAvailable = terrainProvider?.getTileDataAvailable;
+  if (typeof getTileDataAvailable !== 'function') {
+    return terrainProvider;
+  }
+
+  const originalGetTileDataAvailable = getTileDataAvailable.bind(terrainProvider);
+  let hasWarned = false;
+  terrainProvider.getTileDataAvailable = (x: number, y: number, level: number) => {
+    if (level > SAFE_TERRAIN_MAX_LEVEL) {
+      return false;
+    }
+    try {
+      return originalGetTileDataAvailable(x, y, level);
+    } catch (error) {
+      if (!hasWarned) {
+        console.warn('地形瓦片可用性数据异常，已按不可用处理。', error);
+        hasWarned = true;
+      }
+      return false;
+    }
+  };
+
+  return terrainProvider;
 };
 
 const toggleTerrain = async (_event?: Event) => {
@@ -117,14 +176,30 @@ const toggleTerrain = async (_event?: Event) => {
       terrainEnabled.value = false;
       return;
     }
-    const worldTerrain = await createWorldTerrainAsync();
+    const worldTerrain = guardTerrainAvailability(await createWorldTerrainAsync());
     viewer.value.terrainProvider = worldTerrain;
+    viewer.value.useDefaultRenderLoop = true;
+    await new Promise((resolve) => requestAnimationFrame(resolve));
     terrainEnabled.value = true;
   } catch (error) {
     console.error('切换地形失败:', error);
+    if (viewer.value) {
+      viewer.value.terrainProvider = new EllipsoidTerrainProvider();
+      viewer.value.useDefaultRenderLoop = true;
+    }
+    terrainEnabled.value = false;
   } finally {
     terrainSwitching.value = false;
   }
+};
+
+const handleTerrainError = (error: unknown) => {
+  console.error('地形渲染异常，已回退到椭球地形:', error);
+  if (viewer.value) {
+    viewer.value.terrainProvider = new EllipsoidTerrainProvider();
+    viewer.value.useDefaultRenderLoop = true;
+  }
+  terrainEnabled.value = false;
 };
 
 const onMenuSelect = (_id: string) => {};
@@ -138,14 +213,32 @@ const toggleRainstorm = () => {
 };
 
 const toggleRiverRunoff = () => {
-  riverRunoffEnabled.value = !riverRunoffEnabled.value;
+  if (riverRunoffEnabled.value && !riverRunoffTriggersFlood.value) {
+    riverRunoffEnabled.value = false;
+    return;
+  }
+  riverRunoffTriggersFlood.value = false;
+  riverRunoffEnabled.value = true;
+  riverRunoffEffectKey.value += 1;
+};
+
+const toggleFloodRenderEffect = () => {
+  if (riverRunoffEnabled.value && riverRunoffTriggersFlood.value) {
+    riverRunoffEnabled.value = false;
+    riverRunoffTriggersFlood.value = false;
+    return;
+  }
+  riverRunoffTriggersFlood.value = true;
+  riverRunoffEnabled.value = true;
+  riverRunoffEffectKey.value += 1;
 };
 
 const onRiverRunoffComplete = () => {
-  if (!riverRunoffEnabled.value || !floodLoaderRef.value) {
+  if (!riverRunoffEnabled.value || !riverRunoffTriggersFlood.value || !floodLoaderRef.value) {
     return;
   }
   panelVisible.value = false;
+  currentShowcaseCaseId.value = 'xiaojiaqiao';
   floodLoaderRef.value.playShowcase('xiaojiaqiao');
 };
 
@@ -153,7 +246,7 @@ const onRiverRunoffRainstormChange = (active: boolean) => {
   runoffRainstormActive.value = active;
 };
 
-type GalleryShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
+type GalleryShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
 
 const onShowcase = (caseId: GalleryShowcaseCaseId) => {
   if (!floodLoaderRef.value) {
@@ -162,12 +255,14 @@ const onShowcase = (caseId: GalleryShowcaseCaseId) => {
   }
 
   panelVisible.value = false;
+  currentShowcaseCaseId.value = caseId;
   floodLoaderRef.value.playShowcase(caseId);
 };
 
 const resetFloodScene = () => {
   clearTimeout(hideTimeout);
   floodPlaybackToken.value += 1;
+  currentShowcaseCaseId.value = null;
   floodLoaderRef.value?.resetFloodData();
 
   if (viewer.value) {
@@ -191,6 +286,8 @@ const resetFloodScene = () => {
   rainstormEnabled.value = false;
   runoffRainstormActive.value = false;
   riverRunoffEnabled.value = false;
+  riverRunoffTriggersFlood.value = false;
+  riverRunoffEffectKey.value += 1;
   showUI.value = true;
 
   if (cesiumViewerRef.value) {
@@ -219,11 +316,12 @@ const onFlyComplete = () => { showUI.value = true; };
       <TopBar v-show="showUI" :system-title="systemTitle" active-subsystem="flood" @open-panel="openPanel" @reset-ui="resetFloodScene" />
     </transition>
     
-    <CesiumViewer ref="cesiumViewerRef" @viewer-ready="onViewerReady" @fly-complete="onFlyComplete" />
+    <CesiumViewer ref="cesiumViewerRef" @viewer-ready="onViewerReady" @fly-complete="onFlyComplete" @terrain-error="handleTerrainError" />
     <FloodLoader v-if="viewer" ref="floodLoaderRef" class="showcase-flood-loader" :viewer="viewer" />
     <RainstormEffect v-if="viewer" :viewer="viewer" :active="effectiveRainstormEnabled" />
     <RiverRunoffEffect
       v-if="viewer"
+      :key="riverRunoffEffectKey"
       :viewer="viewer"
       :active="riverRunoffEnabled"
       @runoff-complete="onRiverRunoffComplete"
@@ -252,8 +350,10 @@ const onFlyComplete = () => { showUI.value = true; };
             class="scene-effects-flyout"
             :rainstorm-enabled="effectiveRainstormEnabled"
             :river-runoff-enabled="riverRunoffEnabled"
+            :flood-render-enabled="floodRenderEffectEnabled"
             @toggle-rainstorm="toggleRainstorm"
             @toggle-river-runoff="toggleRiverRunoff"
+            @toggle-flood-render="toggleFloodRenderEffect"
           />
         </transition>
       </div>
@@ -289,9 +389,26 @@ const onFlyComplete = () => { showUI.value = true; };
     </transition>
 
     <!-- 2. 灾害模板右侧的高级展示面板 (与TopBar联动) -->
+    <transition name="fade-right">
+      <TemplatePanel
+        v-if="simulationPanelMounted"
+        v-show="simulationPanelActive"
+        side="right"
+        :title="panelTitle"
+        :subtitle="panelSubtitle"
+      >
+        <DataProcessingPanel
+          :viewer="viewer"
+          :terrain-enabled="terrainEnabled"
+          :panel-active="simulationPanelActive"
+          @menu-select="onMenuSelect"
+        />
+      </TemplatePanel>
+    </transition>
+
     <transition :name="sidePanelTransitionName">
       <TemplatePanel
-        v-show="showUI && panelVisible && !isStandalonePanelActive"
+        v-if="showUI && panelVisible && !isStandalonePanelActive && activePanelId !== 'simulation'"
         :class="{
           'monitor-panel-shell': activePanelId === 'monitor',
           'info-panel-shell': activePanelId === 'intro' || activePanelId === 'help'
@@ -300,12 +417,9 @@ const onFlyComplete = () => { showUI.value = true; };
         :title="panelTitle"
         :subtitle="panelSubtitle"
       >
-        <template v-if="showV0226CPanels && activePanelId === 'simulation'">
-          <DataProcessingPanel :viewer="viewer" @menu-select="onMenuSelect" />
-        </template>
-        <FloodAnalysisPanel v-else-if="activePanelId === 'analysis'" :viewer="viewer" />
+        <FloodAnalysisPanel v-if="activePanelId === 'analysis'" :viewer="viewer" />
         <ProjectIntroPanel v-else-if="activePanelId === 'intro'" />
-        <MonitoringPanel v-else-if="activePanelId === 'monitor'" />
+        <MonitoringPanel v-else-if="activePanelId === 'monitor'" :viewer="viewer" />
         <HelpPanel v-else-if="activePanelId === 'help'" />
       </TemplatePanel>
     </transition>
@@ -449,10 +563,10 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 
 .scene-effects-entry {
   position: absolute;
-  top: 110px;
-  left: 82px;
+  top: 50%;
+  left: 24px;
   z-index: 10030;
-  transform: none;
+  transform: translateY(-50%);
   display: flex;
   align-items: center;
   gap: 12px;
@@ -572,7 +686,7 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 .scene-effects-enter-from,
 .scene-effects-leave-to {
   opacity: 0;
-  transform: translateX(-16px);
+  transform: translate(-16px, -50%);
 }
 
 .scene-effects-panel-enter-active,

@@ -1,11 +1,21 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import * as Cesium from 'cesium';
 import FloodLoader from './FloodLoader.vue';
 import StyledFileInput from './StyledFileInput.vue';
+import DrawTriangleMesh from '../js/DrawTriangleMesh';
+import {
+  currentFloodPrimitive,
+  floodPlaybackToken,
+  lastLoadedFloodJson,
+  recordMeshAreaPoint,
+  resetFloodAreaSeries
+} from '../store/floodState';
 
 const props = defineProps<{
   viewer?: Cesium.Viewer | null;
+  terrainEnabled?: boolean;
+  panelActive?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -40,6 +50,102 @@ const files = ref<{ dem: File | null; cao: File | null; river: File | null }>({
 });
 const message = ref('');
 const outputPath = ref('');
+const simulationUtmZone = ref('48');
+const isSimulating = ref(false);
+const meshSourceDir = ref('');
+const meshOutputDir = ref('');
+const meshConversionStatus = ref('等待转换');
+const isConvertingMesh = ref(false);
+const meshFolder = ref('');
+const meshFrames = ref<any[]>([]);
+const activeMeshFrameIndex = ref(0);
+const meshStatus = ref('等待选择 Mesh 文件夹');
+const meshFileName = ref('尚未选择 Mesh 文件夹');
+const meshPointCount = ref(0);
+const meshTriangleCount = ref(0);
+const meshDepthRange = ref('--');
+const floodAreaText = ref('-');
+const meshEvolutionTimeText = ref('-');
+const meshOpacity = ref(0.78);
+const meshHeightScale = ref(1);
+const meshColorRamp = ref('water');
+const meshPlaybackRate = ref(1);
+const isMeshPlaying = ref(false);
+const isMeshPreloading = ref(false);
+let meshPlaybackTimer: number | undefined;
+const meshTerrainHeightCache = new Map<string, number>();
+const meshFrameCache = new Map<string, any>();
+const MAX_MESH_TERRAIN_HEIGHT_CACHE_ENTRIES = 150000;
+const MAX_MESH_FRAME_CACHE_ENTRIES = 1000;
+let meshPreloadPromise: Promise<void> | null = null;
+let meshPreloadToken = 0;
+const EARTH_RADIUS_METERS = 6378137;
+const MESH_FRAME_SECONDS = 20;
+
+const MESH_COLOR_RAMPS: Record<string, string[]> = {
+  water: ['#d9fbff', '#87d8f5', '#3b9fe0', '#1766bd', '#102f83'],
+  depth: ['#e9f9ff', '#a9dff7', '#4aa7dd', '#1761aa', '#092d68'],
+  heat: ['#fff7a8', '#6ed6e6', '#2584d9', '#3846b5', '#32176b']
+};
+
+type MeshAreaVertex = {
+  lon: number;
+  lat: number;
+};
+
+function calculateMeshArea(vertices: MeshAreaVertex[], triangles: number[]) {
+  if (!vertices.length || !triangles.length) return 0;
+  const referenceLat = vertices.reduce((sum, vertex) => sum + vertex.lat, 0) / vertices.length;
+  const xScale = EARTH_RADIUS_METERS * Math.cos(Cesium.Math.toRadians(referenceLat));
+  const yScale = EARTH_RADIUS_METERS;
+  const projected = vertices.map((vertex) => ({
+    x: Cesium.Math.toRadians(vertex.lon) * xScale,
+    y: Cesium.Math.toRadians(vertex.lat) * yScale
+  }));
+  let area = 0;
+  for (let index = 0; index + 2 < triangles.length; index += 3) {
+    const a = projected[triangles[index]];
+    const b = projected[triangles[index + 1]];
+    const c = projected[triangles[index + 2]];
+    if (!a || !b || !c) continue;
+    const triangleArea = Math.abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2;
+    if (Number.isFinite(triangleArea)) area += triangleArea;
+  }
+  return area;
+}
+
+function formatArea(area: number) {
+  if (!Number.isFinite(area) || area <= 0) return '-';
+  if (area >= 1000000) return `${(area / 1000000).toFixed(3)} km²`;
+  return `${area.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} m²`;
+}
+
+function formatEvolutionTime(totalSeconds: number) {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return '-';
+  const seconds = Math.round(totalSeconds);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [hours, minutes, remainingSeconds]
+    .map((item) => String(item).padStart(2, '0'))
+    .join(':');
+}
+
+const calculateMeshAreaM2FromMesh = (mesh: any) => {
+  const positions = Array.isArray(mesh?.positions) ? mesh.positions : [];
+  const triangles = Array.isArray(mesh?.triangles) ? mesh.triangles : [];
+  const vertices: MeshAreaVertex[] = [];
+
+  for (let index = 0; index + 1 < positions.length; index += 2) {
+    const lon = Number(positions[index]);
+    const lat = Number(positions[index + 1]);
+    if (Number.isFinite(lon) && Number.isFinite(lat)) {
+      vertices.push({ lon, lat });
+    }
+  }
+
+  return calculateMeshArea(vertices, triangles.map((item: unknown) => Number(item)));
+};
 
 const handleFileChange = (event: Event, type: 'dem' | 'cao' | 'river') => {
   const target = event.target as HTMLInputElement;
@@ -110,6 +216,584 @@ const downloadZip = async () => {
   }
 };
 
+const fetchJsonResult = async (url: string, options?: RequestInit) => {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let result: any = {};
+
+  try {
+    result = text ? JSON.parse(text) : {};
+  } catch {
+    throw new Error(`接口返回了非 JSON 内容：${text.slice(0, 300)}`);
+  }
+
+  if (!response.ok) {
+    throw new Error(result.error || result.message || `接口返回状态码 ${response.status}`);
+  }
+
+  return result;
+};
+
+const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+const downloadApiZip = async (url: string, fallbackName: string) => {
+  const response = await fetch(`/api${url}`);
+  if (!response.ok) {
+    throw new Error(`下载 ${fallbackName} 失败：${await response.text()}`);
+  }
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.download = fallbackName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 2000);
+};
+
+const waitForFloodSimulationComplete = async (statusUrl?: string) => {
+  const startedAt = Date.now();
+  const timeoutMs = 3 * 60 * 60 * 1000;
+  const apiStatusUrl = `/api${statusUrl || '/simulation-status'}`;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    await sleep(3000);
+    const result = await fetchJsonResult(apiStatusUrl);
+
+    if (result.status === 'finished') {
+      return result;
+    }
+    if (result.status === 'failed') {
+      throw new Error(result.error || result.message || '后端模拟失败');
+    }
+
+    message.value = result.message || '后端正在计算，请稍候...';
+  }
+
+  throw new Error('等待模拟完成超时，请检查后端服务是否仍在运行');
+};
+
+const runOptimizedFloodSimulation = async () => {
+  if (!files.value.dem || !files.value.cao || !files.value.river) {
+    message.value = '请先选择 DEM、糙率和溃口文件';
+    return;
+  }
+
+  const normalizedUtmZone = String(simulationUtmZone.value).trim();
+  if (!/^(?:[1-9]|[1-5]\d|60)$/.test(normalizedUtmZone)) {
+    message.value = '请输入 1-60 之间的 UTM 投影带号';
+    return;
+  }
+
+  isSimulating.value = true;
+  message.value = '正在启动后端模拟...';
+
+  try {
+    const formData = new FormData();
+    formData.append('dem', files.value.dem);
+    formData.append('cao', files.value.cao);
+    formData.append('river', files.value.river);
+    formData.append('utmZone', normalizedUtmZone);
+
+    const startResult = await fetchJsonResult(`/api/upload-all?utmZone=${encodeURIComponent(normalizedUtmZone)}`, {
+      method: 'POST',
+      body: formData
+    });
+
+    message.value = '后端已开始计算，正在等待结果...';
+    const result = startResult.status === 'finished'
+      ? startResult
+      : await waitForFloodSimulationComplete(startResult.statusUrl);
+
+    if (result.txtZipUrl) {
+      message.value = '模拟完成，正在下载 TXT 结果...';
+      await downloadApiZip(result.txtZipUrl, 'flood_txt.zip');
+    }
+    if (result.jsonZipUrl) {
+      message.value = 'TXT 下载完成，正在下载 JSON 结果...';
+      await downloadApiZip(result.jsonZipUrl, 'flood_json.zip');
+    }
+    if (result.restartUrl) {
+      message.value = '结果下载完成，正在重启后端服务...';
+      await fetchJsonResult(`/api${result.restartUrl}`, { method: 'POST' });
+    }
+
+    message.value = '模拟完成，结果已下载';
+  } catch (error) {
+    message.value = `模拟失败：${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    isSimulating.value = false;
+  }
+};
+
+const pickMeshPath = async (field: 'source' | 'output' | 'folder') => {
+  try {
+    const response = await fetch('/api/select-folder', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'dir' })
+    });
+    const result = await response.json();
+    if (!result.success) {
+      throw new Error(result.message || '选择目录失败');
+    }
+    if (!result.path) {
+      return;
+    }
+
+    const normalizedPath = String(result.path).replace(/\\/g, '/');
+    if (field === 'source') meshSourceDir.value = normalizedPath;
+    if (field === 'output') meshOutputDir.value = normalizedPath;
+    if (field === 'folder') {
+      meshFolder.value = normalizedPath;
+      await loadMeshAnimationFolder(normalizedPath);
+    }
+  } catch (error) {
+    const messageText = error instanceof Error ? error.message : String(error);
+    if (field === 'folder') {
+      meshStatus.value = `选择失败：${messageText}`;
+    } else {
+      meshConversionStatus.value = `选择失败：${messageText}`;
+    }
+  }
+};
+
+const convertJsonToMesh = async () => {
+  if (!meshSourceDir.value.trim() || !meshOutputDir.value.trim()) {
+    meshConversionStatus.value = '请选择 JSON 源目录和 Mesh 输出目录';
+    return;
+  }
+
+  isConvertingMesh.value = true;
+  meshConversionStatus.value = '正在转换 Mesh...';
+  try {
+    const response = await fetch('/api/build-mesh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sourceDir: meshSourceDir.value.trim(),
+        outputDir: meshOutputDir.value.trim()
+      })
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'Mesh 转换失败');
+    }
+    meshConversionStatus.value = result.message || 'Mesh 转换完成';
+  } catch (error) {
+    meshConversionStatus.value = `转换失败：${error instanceof Error ? error.message : String(error)}`;
+  } finally {
+    isConvertingMesh.value = false;
+  }
+};
+
+const stopMeshPlayback = () => {
+  isMeshPlaying.value = false;
+  if (meshPlaybackTimer) {
+    window.clearTimeout(meshPlaybackTimer);
+    meshPlaybackTimer = undefined;
+  }
+};
+
+const completeMeshPlayback = () => {
+  stopMeshPlayback();
+  meshStatus.value = `播放完成：已到第 ${meshFrames.value.length} / ${meshFrames.value.length} 帧`;
+};
+
+const removeMeshFlood = () => {
+  if (currentFloodPrimitive.value && props.viewer) {
+    props.viewer.scene.primitives.remove(currentFloodPrimitive.value);
+    currentFloodPrimitive.value = null;
+  }
+};
+
+const getMeshFrameCacheKey = (folder: string, name: string) => `${folder}::${name}`;
+
+const readMeshFrame = async (frame: any) => {
+  const cacheKey = getMeshFrameCacheKey(meshFolder.value, frame.name);
+  const cachedMesh = meshFrameCache.get(cacheKey);
+  if (cachedMesh) {
+    return cachedMesh;
+  }
+
+  const response = await fetch(
+    `/api/mesh-frame?folder=${encodeURIComponent(meshFolder.value)}&name=${encodeURIComponent(frame.name)}`
+  );
+  const mesh = await response.json();
+  if (!response.ok) {
+    throw new Error(mesh.error || 'Mesh 帧读取失败');
+  }
+  if (!Array.isArray(mesh.positions) || !Array.isArray(mesh.values) || !Array.isArray(mesh.triangles)) {
+    throw new Error('Mesh 帧缺少 positions、values 或 triangles 字段');
+  }
+
+  if (meshFrameCache.size >= MAX_MESH_FRAME_CACHE_ENTRIES) {
+    meshFrameCache.clear();
+  }
+  meshFrameCache.set(cacheKey, mesh);
+  return mesh;
+};
+
+const isAllMeshFramesCached = () => (
+  meshFrames.value.length > 0
+  && meshFrames.value.every((frame) => meshFrameCache.has(getMeshFrameCacheKey(meshFolder.value, frame.name)))
+);
+
+const preloadMeshFrames = async (showStatus = true) => {
+  if (!meshFrames.value.length || isAllMeshFramesCached()) {
+    return;
+  }
+  if (meshPreloadPromise) {
+    return meshPreloadPromise;
+  }
+
+  isMeshPreloading.value = true;
+  let loadedCount = 0;
+  let nextFrameIndex = 0;
+  const total = meshFrames.value.length;
+  const concurrency = Math.min(8, total);
+  const currentToken = meshPreloadToken;
+
+  meshPreloadPromise = (async () => {
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (nextFrameIndex < total) {
+        if (currentToken !== meshPreloadToken) {
+          return;
+        }
+        const frame = meshFrames.value[nextFrameIndex];
+        nextFrameIndex += 1;
+        await readMeshFrame(frame);
+        loadedCount += 1;
+        if (showStatus && (loadedCount === total || loadedCount % 10 === 0)) {
+          meshStatus.value = `正在预加载 Mesh 帧 ${loadedCount} / ${total}`;
+        }
+      }
+    });
+
+    await Promise.all(workers);
+    if (showStatus && currentToken === meshPreloadToken) {
+      meshStatus.value = `Mesh 帧已预加载 ${total} / ${total}`;
+    }
+  })().finally(() => {
+    if (currentToken === meshPreloadToken) {
+      isMeshPreloading.value = false;
+      meshPreloadPromise = null;
+    }
+  });
+
+  return meshPreloadPromise;
+};
+
+const getMeshTerrainHeightCacheKey = (lon: number, lat: number) => `${lon.toFixed(9)},${lat.toFixed(9)}`;
+const MESH_TERRAIN_SAMPLE_BATCH_SIZE = 2000;
+const MESH_TERRAIN_SAMPLE_LEVEL = 13;
+const MESH_TERRAIN_FALLBACK_LEVEL = 8;
+
+const isRealTerrainEnabled = () => {
+  const terrainProvider = props.viewer?.terrainProvider;
+  return !!props.terrainEnabled && !!terrainProvider && !(terrainProvider instanceof Cesium.EllipsoidTerrainProvider);
+};
+
+const sampleMeshTerrainHeights = async (mesh: any) => {
+  if (!props.viewer || !isRealTerrainEnabled()) {
+    return undefined;
+  }
+
+  const vertexCount = Array.isArray(mesh.values) ? mesh.values.length : 0;
+  const heights = new Float64Array(vertexCount);
+  const missing: Array<{ index: number; key: string; cartographic: Cesium.Cartographic }> = [];
+
+  for (let index = 0; index < vertexCount; index += 1) {
+    const lon = Number(mesh.positions[index * 2]);
+    const lat = Number(mesh.positions[index * 2 + 1]);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat) || lon < -180 || lon > 180 || lat < -90 || lat > 90) {
+      continue;
+    }
+
+    const key = getMeshTerrainHeightCacheKey(lon, lat);
+    const cachedHeight = meshTerrainHeightCache.get(key);
+    if (cachedHeight !== undefined) {
+      heights[index] = cachedHeight;
+    } else {
+      missing.push({
+        index,
+        key,
+        cartographic: Cesium.Cartographic.fromDegrees(lon, lat)
+      });
+    }
+  }
+
+  if (!missing.length) {
+    return heights;
+  }
+
+  if (meshTerrainHeightCache.size + missing.length > MAX_MESH_TERRAIN_HEIGHT_CACHE_ENTRIES) {
+    meshTerrainHeightCache.clear();
+  }
+
+  try {
+    for (let batchStart = 0; batchStart < missing.length; batchStart += MESH_TERRAIN_SAMPLE_BATCH_SIZE) {
+      const batch = missing.slice(batchStart, batchStart + MESH_TERRAIN_SAMPLE_BATCH_SIZE);
+      const positions = batch.map((item) => item.cartographic);
+      const sampled = await Cesium.sampleTerrain(
+        props.viewer.terrainProvider,
+        MESH_TERRAIN_SAMPLE_LEVEL,
+        positions
+      );
+
+      const unresolved = sampled.filter((position) => !Number.isFinite(position.height));
+      if (unresolved.length) {
+        await Cesium.sampleTerrain(
+          props.viewer.terrainProvider,
+          MESH_TERRAIN_FALLBACK_LEVEL,
+          unresolved
+        );
+      }
+
+      sampled.forEach((position, sampleIndex) => {
+        const item = batch[sampleIndex];
+        const height = Number.isFinite(position.height) ? Number(position.height) : 0;
+        meshTerrainHeightCache.set(item.key, height);
+        heights[item.index] = height;
+      });
+    }
+  } catch (error) {
+    console.warn('Mesh terrain sampling failed', error);
+    return undefined;
+  }
+
+  return heights;
+};
+
+const renderMeshFrame = async (frameIndex: number, shouldFly = false, sessionToken?: number) => {
+  const frame = meshFrames.value[frameIndex];
+  if (!frame || !props.viewer) {
+    return;
+  }
+
+  // 手动渲染会接管洪水图层；连续播放则沿用同一个令牌。
+  const renderToken = sessionToken ?? (floodPlaybackToken.value += 1);
+
+  try {
+    if (!isMeshPlaying.value) {
+      meshStatus.value = `正在渲染第 ${frameIndex + 1} / ${meshFrames.value.length} 帧`;
+    }
+    const mesh = await readMeshFrame(frame);
+
+    const terrainHeights = await sampleMeshTerrainHeights(mesh);
+
+    if (renderToken !== floodPlaybackToken.value) {
+      return;
+    }
+
+    const primitive = DrawTriangleMesh.createMeshPrimitive({
+      mesh,
+      stats: mesh.stats || frame.stats,
+      alpha: meshOpacity.value,
+      heightScale: meshHeightScale.value,
+      surfaceOffset: 1.2,
+      terrainHeights,
+      colorRamp: MESH_COLOR_RAMPS[meshColorRamp.value] || MESH_COLOR_RAMPS.water
+    });
+
+    removeMeshFlood();
+    currentFloodPrimitive.value = primitive;
+    props.viewer.scene.primitives.add(primitive);
+    if (!isMeshPlaying.value) {
+      lastLoadedFloodJson.value = mesh;
+    }
+
+    activeMeshFrameIndex.value = frameIndex;
+    meshFileName.value = frame.name;
+    meshPointCount.value = mesh.pointCount || mesh.values.length;
+    meshTriangleCount.value = mesh.triangleCount || Math.floor(mesh.triangles.length / 3);
+    const stats = mesh.stats || frame.stats || {};
+    const minDepth = Number.isFinite(stats.minValue) ? Number(stats.minValue) : Math.min(...mesh.values.slice(0, 10000));
+    const maxDepth = Number.isFinite(stats.maxValue) ? Number(stats.maxValue) : Math.max(...mesh.values.slice(0, 10000));
+    meshDepthRange.value = `${minDepth.toFixed(3)} ~ ${maxDepth.toFixed(3)} m`;
+    const meshAreaM2 = calculateMeshAreaM2FromMesh(mesh);
+    floodAreaText.value = formatArea(meshAreaM2);
+    recordMeshAreaPoint(frameIndex + 1, meshAreaM2);
+    meshEvolutionTimeText.value = formatEvolutionTime((frameIndex + 1) * MESH_FRAME_SECONDS);
+    if (!isMeshPlaying.value || frameIndex % 5 === 0) {
+      meshStatus.value = `已渲染第 ${frameIndex + 1} / ${meshFrames.value.length} 帧：${frame.name}`;
+    }
+
+    if (shouldFly) {
+      flyToMeshFlood();
+    }
+  } catch (error) {
+    meshStatus.value = `渲染失败：${error instanceof Error ? error.message : String(error)}`;
+  }
+};
+
+const loadMeshAnimationFolder = async (folder: string) => {
+  if (!folder) {
+    return;
+  }
+  stopMeshPlayback();
+  meshPreloadToken += 1;
+  meshPreloadPromise = null;
+  isMeshPreloading.value = false;
+  meshFrameCache.clear();
+  try {
+    meshStatus.value = '正在读取 index.json...';
+    const response = await fetch('/api/mesh-index', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder })
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+      throw new Error(result.error || result.message || 'index.json 读取失败');
+    }
+    meshFolder.value = result.folder;
+    meshFrames.value = result.frames.sort((a: any, b: any) => Number(a.index) - Number(b.index));
+    resetFloodAreaSeries();
+    await renderMeshFrame(0, true);
+    void preloadMeshFrames(false);
+  } catch (error) {
+    meshStatus.value = `加载 Mesh 文件夹失败：${error instanceof Error ? error.message : String(error)}`;
+  }
+};
+
+const toggleMeshPlayback = async () => {
+  if (!meshFrames.value.length) {
+    return;
+  }
+  if (isMeshPlaying.value) {
+    stopMeshPlayback();
+    return;
+  }
+
+  if (!isAllMeshFramesCached()) {
+    meshStatus.value = '正在预加载 Mesh 帧，完成后开始播放...';
+    await preloadMeshFrames(true);
+  }
+
+  if (activeMeshFrameIndex.value >= meshFrames.value.length - 1) {
+    completeMeshPlayback();
+    return;
+  }
+
+  const playbackToken = floodPlaybackToken.value + 1;
+  floodPlaybackToken.value = playbackToken;
+  isMeshPlaying.value = true;
+  const playNext = async () => {
+    if (!isMeshPlaying.value || playbackToken !== floodPlaybackToken.value) {
+      stopMeshPlayback();
+      return;
+    }
+    if (activeMeshFrameIndex.value >= meshFrames.value.length - 1) {
+      completeMeshPlayback();
+      return;
+    }
+    const nextIndex = activeMeshFrameIndex.value + 1;
+    await renderMeshFrame(nextIndex, false, playbackToken);
+    if (!isMeshPlaying.value || playbackToken !== floodPlaybackToken.value) {
+      stopMeshPlayback();
+      return;
+    }
+    if (nextIndex >= meshFrames.value.length - 1) {
+      completeMeshPlayback();
+      return;
+    }
+    meshPlaybackTimer = window.setTimeout(playNext, Math.max(30, Math.round(350 / meshPlaybackRate.value)));
+  };
+  meshPlaybackTimer = window.setTimeout(playNext, Math.max(30, Math.round(350 / meshPlaybackRate.value)));
+};
+
+const restartMeshPlayback = async () => {
+  if (!meshFrames.value.length) {
+    return;
+  }
+
+  stopMeshPlayback();
+  if (!isAllMeshFramesCached()) {
+    meshStatus.value = '正在预加载 Mesh 帧，完成后从头播放...';
+    await preloadMeshFrames(true);
+  }
+
+  const playbackToken = floodPlaybackToken.value + 1;
+  floodPlaybackToken.value = playbackToken;
+  await renderMeshFrame(0, false, playbackToken);
+  if (meshFrames.value.length === 1) {
+    completeMeshPlayback();
+    return;
+  }
+  isMeshPlaying.value = true;
+  const playNext = async () => {
+    if (!isMeshPlaying.value || playbackToken !== floodPlaybackToken.value) {
+      stopMeshPlayback();
+      return;
+    }
+    if (activeMeshFrameIndex.value >= meshFrames.value.length - 1) {
+      completeMeshPlayback();
+      return;
+    }
+    const nextIndex = activeMeshFrameIndex.value + 1;
+    await renderMeshFrame(nextIndex, false, playbackToken);
+    if (!isMeshPlaying.value || playbackToken !== floodPlaybackToken.value) {
+      stopMeshPlayback();
+      return;
+    }
+    if (nextIndex >= meshFrames.value.length - 1) {
+      completeMeshPlayback();
+      return;
+    }
+    meshPlaybackTimer = window.setTimeout(playNext, Math.max(30, Math.round(350 / meshPlaybackRate.value)));
+  };
+  meshPlaybackTimer = window.setTimeout(playNext, Math.max(30, Math.round(350 / meshPlaybackRate.value)));
+};
+
+const renderPreviousMeshFrame = () => {
+  if (!meshFrames.value.length) {
+    return;
+  }
+  stopMeshPlayback();
+  const previousIndex = (activeMeshFrameIndex.value - 1 + meshFrames.value.length) % meshFrames.value.length;
+  void renderMeshFrame(previousIndex);
+};
+
+const renderNextMeshFrame = () => {
+  if (!meshFrames.value.length) {
+    return;
+  }
+  stopMeshPlayback();
+  const nextIndex = (activeMeshFrameIndex.value + 1) % meshFrames.value.length;
+  void renderMeshFrame(nextIndex);
+};
+
+const flyToMeshFlood = () => {
+  const primitive = currentFloodPrimitive.value as (Cesium.Primitive & { _boundingSphereWorld?: Cesium.BoundingSphere }) | null;
+  if (!primitive?._boundingSphereWorld || !props.viewer) {
+    return;
+  }
+  props.viewer.camera.flyToBoundingSphere(primitive._boundingSphereWorld, {
+    duration: 1.2,
+    offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-55), primitive._boundingSphereWorld.radius * 3)
+  });
+};
+
+const clearMeshFlood = () => {
+  stopMeshPlayback();
+  meshPreloadToken += 1;
+  meshPreloadPromise = null;
+  isMeshPreloading.value = false;
+  meshFrameCache.clear();
+  removeMeshFlood();
+  meshFileName.value = '尚未选择 Mesh 文件夹';
+  meshPointCount.value = 0;
+  meshTriangleCount.value = 0;
+  meshDepthRange.value = '--';
+  floodAreaText.value = '-';
+  meshEvolutionTimeText.value = '-';
+  resetFloodAreaSeries();
+  meshStatus.value = '洪水图层已清空';
+};
+
 const boundsEntities = ref<Cesium.Entity[]>([]);
 let drawingScriptReady = false;
 
@@ -147,11 +831,11 @@ const menuItems = ref<MenuGroup[]>([
     ]
   },
   {
-    name: '模拟',
+    name: '洪水模拟',
     expanded: true,
     children: [
-      { id: 'params', name: '输出水深数据' },
-      { id: 'run', name: '水深转json' }
+      { id: 'simulate-flood', name: '模拟计算' },
+      { id: 'json-to-mesh', name: 'JSON 转 Mesh' }
     ]
   },
   {
@@ -672,6 +1356,10 @@ onMounted(async () => {
   window.__handleLineTxtFileChange = handleLineTxtFileChange;
   window.__handleRowcolSubmit = handleRowcolSubmit;
 });
+
+onBeforeUnmount(() => {
+  stopMeshPlayback();
+});
 </script>
 
 <template>
@@ -702,7 +1390,7 @@ onMounted(async () => {
     </div>
 
     <Teleport to="body">
-      <div v-if="isToolPanelActive(activeItem)" class="tool-panel">
+      <div v-if="props.panelActive && isToolPanelActive(activeItem)" class="tool-panel">
         <div v-show="activeItem === 'tif2asc'" class="tool-block">
         <h5>1. 格式转换</h5>
         <form id="convertForm" enctype="multipart/form-data" @submit.prevent="handleConvertSubmit">
@@ -842,10 +1530,111 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div v-if="activeItem && !isToolPanelActive(activeItem)" class="tool-panel">
+    <div v-if="props.panelActive && activeItem && !isToolPanelActive(activeItem)" class="tool-panel">
       <div class="tool-content">
         <h4 class="tool-title">{{ getActiveItemName() }}</h4>
-        <div v-if="activeItem === 'params'">
+        <div v-if="activeItem === 'simulate-flood'">
+          <div class="panel-content">
+            <label class="form-label">DEM 文件（.asc）</label>
+            <StyledFileInput class="file-field" accept=".asc" button-text="选择 DEM" placeholder="未选择 DEM 文件" @change="handleFileChange($event, 'dem')" />
+
+            <label class="form-label">糙率文件（.asc）</label>
+            <StyledFileInput class="file-field" accept=".asc" button-text="选择糙率" placeholder="未选择糙率文件" @change="handleFileChange($event, 'cao')" />
+
+            <label class="form-label">溃口文件（.dat）</label>
+            <StyledFileInput class="file-field" accept=".dat,.txt" button-text="选择溃口" placeholder="未选择溃口文件" @change="handleFileChange($event, 'river')" />
+
+            <label class="form-label">UTM 投影带号</label>
+            <input class="form-control file-field-last" v-model="simulationUtmZone" inputmode="numeric" placeholder="例如 48" />
+
+            <button class="btn btn-primary" @click="runOptimizedFloodSimulation" :disabled="isSimulating">
+              {{ isSimulating ? '正在模拟...' : '开始模拟计算' }}
+            </button>
+
+            <div class="result" style="margin-top: 15px;">
+              <p v-if="message" :class="message.includes('失败') ? 'error-text' : 'result-text'">{{ message }}</p>
+              <p v-else class="text-muted" style="font-size: 12px;">等待计算</p>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="activeItem === 'json-to-mesh'">
+          <div class="panel-content">
+            <label class="form-label">JSON 源目录</label>
+            <div class="path-row">
+              <input class="form-control" type="text" v-model="meshSourceDir" placeholder="选择包含 Flood*.json 的目录" />
+              <button class="btn btn-secondary path-btn" @click="pickMeshPath('source')">浏览</button>
+            </div>
+
+            <label class="form-label">Mesh 输出目录</label>
+            <div class="path-row">
+              <input class="form-control" type="text" v-model="meshOutputDir" placeholder="选择 .mesh.json 输出目录" />
+              <button class="btn btn-secondary path-btn" @click="pickMeshPath('output')">浏览</button>
+            </div>
+
+            <button class="btn btn-primary" @click="convertJsonToMesh" :disabled="isConvertingMesh">
+              {{ isConvertingMesh ? '正在转换...' : '开始转换' }}
+            </button>
+
+            <div class="result" style="margin-top: 15px;">
+              <p :class="meshConversionStatus.includes('失败') ? 'error-text' : 'result-text'" style="white-space: pre-wrap; font-size: 12px;">{{ meshConversionStatus }}</p>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="activeItem === 'render-flood'">
+          <div class="panel-content">
+            <label class="form-label">Mesh 文件夹</label>
+            <div class="path-row">
+              <input class="form-control" type="text" v-model="meshFolder" placeholder="选择包含 index.json 的目录" />
+              <button class="btn btn-secondary path-btn" @click="pickMeshPath('folder')">浏览</button>
+            </div>
+
+            <div class="mesh-stats">
+              <div><span>当前帧</span><strong>{{ meshFrames.length ? `${activeMeshFrameIndex + 1} / ${meshFrames.length}` : '--' }}</strong></div>
+              <div><span>点数</span><strong>{{ meshPointCount || '--' }}</strong></div>
+              <div><span>三角面</span><strong>{{ meshTriangleCount || '--' }}</strong></div>
+              <div><span>水深范围</span><strong>{{ meshDepthRange }}</strong></div>
+            </div>
+            <div class="area-readout">
+              <span>当前洪水面积</span>
+              <strong>{{ floodAreaText }}</strong>
+            </div>
+            <div class="area-readout time-readout">
+              <span>演进时间</span>
+              <strong>{{ meshEvolutionTimeText }}</strong>
+            </div>
+
+            <label class="form-label">透明度 {{ meshOpacity.toFixed(2) }}</label>
+            <input class="range-control" v-model.number="meshOpacity" type="range" min="0.1" max="1" step="0.05" @input="renderMeshFrame(activeMeshFrameIndex)" />
+
+            <label class="form-label">高度比例 {{ meshHeightScale.toFixed(1) }}</label>
+            <input class="range-control" v-model.number="meshHeightScale" type="range" min="0" max="5" step="0.1" @input="renderMeshFrame(activeMeshFrameIndex)" />
+
+            <label class="form-label">颜色方案</label>
+            <select class="form-control" v-model="meshColorRamp" @change="renderMeshFrame(activeMeshFrameIndex)">
+              <option value="water">水蓝</option>
+              <option value="depth">深水蓝</option>
+              <option value="heat">深度热图</option>
+            </select>
+
+            <label class="form-label">播放速率 {{ meshPlaybackRate.toFixed(2) }}x</label>
+            <input class="range-control" v-model.number="meshPlaybackRate" type="range" min="0.25" max="4" step="0.25" />
+
+            <div class="mesh-actions">
+              <button class="btn btn-secondary" @click="flyToMeshFlood" :disabled="!currentFloodPrimitive">定位洪水</button>
+              <button class="btn btn-primary" @click="toggleMeshPlayback" :disabled="!meshFrames.length">{{ isMeshPlaying ? '暂停播放' : isMeshPreloading ? '预加载中' : '连续播放' }}</button>
+              <button class="btn btn-secondary" @click="restartMeshPlayback" :disabled="!meshFrames.length">从头播放</button>
+              <button class="btn btn-secondary" @click="renderPreviousMeshFrame" :disabled="!meshFrames.length">上一帧</button>
+              <button class="btn btn-secondary" @click="renderNextMeshFrame" :disabled="!meshFrames.length">下一帧</button>
+              <button class="btn btn-secondary" @click="clearMeshFlood">清除图层</button>
+            </div>
+
+            <div class="result" style="margin-top: 15px;">
+              <p class="text-muted" style="font-size: 12px;">{{ meshFileName }}</p>
+              <p :class="meshStatus.includes('失败') ? 'error-text' : 'result-text'" style="white-space: pre-wrap; font-size: 12px;">{{ meshStatus }}</p>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="activeItem === 'params'">
           <div class="panel-content">
             <label class="form-label">DEM 文件（dem.asc）：</label>
             <StyledFileInput class="file-field" accept=".asc" button-text="选择 DEM" placeholder="未选择 dem.asc" @change="handleFileChange($event, 'dem')" />
@@ -1056,6 +1845,101 @@ onMounted(async () => {
 
 .file-field-last {
   margin-bottom: 15px;
+}
+
+.path-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.path-row .form-control {
+  flex: 1;
+  min-width: 0;
+}
+
+.path-btn {
+  flex: 0 0 auto;
+  margin-top: 0;
+  white-space: nowrap;
+}
+
+.range-control {
+  width: 100%;
+  margin: 2px 0 12px;
+  accent-color: var(--sys-theme-color, #00e5ff);
+}
+
+.mesh-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.mesh-stats div {
+  min-height: 54px;
+  padding: 8px;
+  border: 1px solid var(--sys-border-color-light, rgba(0, 229, 255, 0.1));
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.22);
+}
+
+.mesh-stats span {
+  display: block;
+  margin-bottom: 5px;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.mesh-stats strong {
+  display: block;
+  color: #e5f9ff;
+  font-size: 12px;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.area-readout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: -2px 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 229, 255, 0.22);
+  border-radius: 4px;
+  background: rgba(0, 229, 255, 0.08);
+}
+
+.time-readout {
+  margin-top: -6px;
+}
+
+.area-readout span {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.area-readout strong {
+  color: var(--sys-theme-color, #00e5ff);
+  font-size: 14px;
+  line-height: 1.3;
+  text-align: right;
+  word-break: break-word;
+}
+
+.mesh-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mesh-actions .btn {
+  width: 100%;
+  margin: 0;
 }
 
 .btn {

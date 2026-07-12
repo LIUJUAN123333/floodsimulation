@@ -2,11 +2,13 @@
 defineProps<{
   rainstormEnabled: boolean;
   riverRunoffEnabled: boolean;
+  floodRenderEnabled: boolean;
 }>();
 
 const emit = defineEmits<{
   toggleRainstorm: [];
   toggleRiverRunoff: [];
+  toggleFloodRender: [];
 }>();
 </script>
 
@@ -59,9 +61,16 @@ const emit = defineEmits<{
       </span>
     </button>
 
-    <div class="effect-slots" aria-hidden="true">
+    <div class="effect-slots">
       <span>台风</span>
       <span>雾效</span>
+      <button
+        type="button"
+        :class="{ active: floodRenderEnabled }"
+        @click="emit('toggleFloodRender')"
+      >
+        洪水渲染
+      </button>
     </div>
   </section>
 </template>
@@ -211,7 +220,8 @@ const emit = defineEmits<{
   margin-top: 0;
 }
 
-.effect-slots span {
+.effect-slots span,
+.effect-slots button {
   min-height: 28px;
   border: 1px dashed rgba(128, 164, 214, 0.22);
   border-radius: 6px;
@@ -221,5 +231,23 @@ const emit = defineEmits<{
   color: rgba(174, 205, 230, 0.46);
   background: rgba(255, 255, 255, 0.025);
   font-size: 11px;
+}
+
+.effect-slots button {
+  grid-column: 1 / -1;
+  color: #8feeff;
+  border-color: rgba(0, 229, 255, 0.28);
+  background: rgba(0, 229, 255, 0.06);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+.effect-slots button:hover,
+.effect-slots button.active {
+  color: #ffffff;
+  border-color: rgba(0, 229, 255, 0.72);
+  background: rgba(0, 229, 255, 0.14);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.12);
 }
 </style>

@@ -57,6 +57,13 @@ SHOWCASE_CASES = {
         'heading_offset_degrees': 0,
         'cell_size': 20
     },
+    'yongchuan': {
+        'name': '永川',
+        'directory': os.path.join(SHOWCASE_ROOT, 'yongchuan2'),
+        'utm_zone': 48,
+        'asc_file': 'Yongchuan_DEM_20m_48N.asc',
+        'xml_file': 'Flood_New.xml'
+    },
     'xiaojiaqiao': {
         'name': '肖家桥',
         'directory': os.path.join(SHOWCASE_ROOT, 'xiaojiaqiao'),
@@ -566,6 +573,97 @@ def run_grid_to_tin():
         return Response(stream_with_context(generate()), mimetype='application/x-ndjson')
     except Exception as e:
         return jsonify({'success': False, 'message': f'服务端错误: {str(e)}'})
+
+@app.route('/api/mesh-index', methods=['POST'])
+def get_mesh_index():
+    try:
+        data = request.get_json(silent=True) or {}
+        folder = os.path.abspath(str(data.get('folder') or ''))
+        index_path = os.path.abspath(os.path.join(folder, 'index.json'))
+
+        if not os.path.isfile(index_path):
+            return jsonify({'success': False, 'error': f'index.json 不存在: {index_path}'}), 404
+
+        with open(index_path, 'r', encoding='utf-8') as file:
+            index = json.load(file)
+
+        frames = index.get('frames')
+        if not isinstance(frames, list) or not frames:
+            return jsonify({'success': False, 'error': 'index.json 中没有 frames 索引'}), 400
+
+        safe_frames = []
+        for frame in frames:
+            name = os.path.basename(str(frame.get('name') or ''))
+            if not name.lower().endswith('.mesh.json'):
+                continue
+            safe_frames.append({
+                'name': name,
+                'index': frame.get('index'),
+                'pointCount': frame.get('pointCount'),
+                'triangleCount': frame.get('triangleCount'),
+                'triangulation': frame.get('triangulation'),
+                'stats': frame.get('stats')
+            })
+
+        return jsonify({'success': True, 'folder': os.path.dirname(index_path), 'frames': safe_frames})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'无法读取 Mesh 索引: {str(e)}'}), 500
+
+
+@app.route('/api/mesh-frame', methods=['GET'])
+def get_mesh_frame():
+    try:
+        folder = os.path.abspath(str(request.args.get('folder') or ''))
+        name = os.path.basename(str(request.args.get('name') or ''))
+        if not name.lower().endswith('.mesh.json'):
+            return jsonify({'success': False, 'error': '无效的 Mesh 文件名'}), 400
+
+        file_path = os.path.abspath(os.path.join(folder, name))
+        if os.path.commonpath([folder, file_path]) != folder:
+            return jsonify({'success': False, 'error': '无效的 Mesh 路径'}), 400
+        if not os.path.isfile(file_path):
+            return jsonify({'success': False, 'error': f'Mesh 文件不存在: {name}'}), 404
+
+        return send_file(file_path, mimetype='application/json')
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'无法读取 Mesh 帧: {str(e)}'}), 500
+
+
+@app.route('/api/build-mesh', methods=['POST'])
+def build_mesh_cache():
+    try:
+        data = request.get_json(silent=True) or {}
+        source_dir = os.path.abspath(str(data.get('sourceDir') or ''))
+        output_dir = os.path.abspath(str(data.get('outputDir') or ''))
+
+        if not os.path.isdir(source_dir):
+            return jsonify({'success': False, 'error': f'JSON 源目录不存在: {source_dir}'}), 400
+        os.makedirs(output_dir, exist_ok=True)
+
+        script_path = os.path.join(os.path.dirname(__file__), 'build-mesh-cache.cjs')
+        if not os.path.isfile(script_path):
+            return jsonify({'success': False, 'error': f'Mesh 转换脚本不存在: {script_path}'}), 500
+
+        env = os.environ.copy()
+        env['MESH_WORKERS'] = str(data.get('workers') or 4)
+        process = subprocess.run(
+            ['node', script_path, source_dir, output_dir],
+            cwd=os.path.dirname(__file__),
+            capture_output=True,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            env=env
+        )
+
+        output = (process.stdout or '') + (process.stderr or '')
+        if process.returncode != 0:
+            return jsonify({'success': False, 'error': output or f'Mesh 转换失败，退出码 {process.returncode}'}), 500
+
+        return jsonify({'success': True, 'message': 'Mesh 转换完成', 'output': output, 'outputDir': output_dir})
+    except Exception as e:
+        return jsonify({'success': False, 'error': f'Mesh 转换失败: {str(e)}'}), 500
+
 
 @app.route('/convert', methods=['POST'])
 def convert_file():

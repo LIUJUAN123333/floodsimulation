@@ -24,6 +24,14 @@ const mouseAlt = ref('0.0000');
 
 const isTerrainEnabled = ref(true);
 
+const configureCameraControls = (viewerInstance: Viewer) => {
+  const controller = viewerInstance.scene.screenSpaceCameraController;
+  controller.inertiaZoom = 0.35;
+  controller.minimumZoomDistance = 40;
+  controller.maximumZoomDistance = 28000000;
+  controller.maximumMovementRatio = 0.035;
+};
+
 const toggleTerrain = async () => {
   if (!viewer) return;
   if (isTerrainEnabled.value) {
@@ -67,6 +75,8 @@ onMounted(async () => {
     vrButton: false,
     skyBox: false
   });
+
+  configureCameraControls(viewer);
 
   viewer.scene.backgroundColor = Color.fromCssColorString('#0a0d14');
   viewer.clock.currentTime = JulianDate.fromDate(new Date('2023-06-21T04:00:00Z'));

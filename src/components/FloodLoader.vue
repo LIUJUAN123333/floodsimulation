@@ -5,6 +5,7 @@ import DrawTriangleMesh from '../js/DrawTriangleMesh';
 import * as proj4 from 'proj4';
 import {
   lastLoadedFloodJson,
+  currentShowcaseCaseId,
   floodCellSize,
   currentFloodPrimitive,
   floodPlaybackToken,
@@ -42,7 +43,7 @@ const parsedCellsize = ref<number | null>(null);
 const coordMessage = ref('');
 const floodFiles = ref<File[]>([]);
 
-type ShowcaseCaseId = 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
+type ShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
 
 type ShowcaseManifest = {
   success: boolean;
@@ -85,7 +86,27 @@ type ShowcaseManifest = {
 type ShowcasePlaybackOptions = {
   initialBufferCount: number;
   prefetchCount: number;
+  initialBufferBytes: number;
+  prefetchBytes: number;
+  startupBufferCount: number;
+  startupBufferBytes: number;
   frameIntervalMs: number;
+  statsIntervalFrames: number;
+  uiIntervalFrames: number;
+  slowFrameWarningMs: number;
+  cacheBackFrames: number;
+  cacheAheadFrames: number;
+  prefetchConcurrency: number;
+  yieldEveryFrames: number;
+  yieldMs: number;
+  frameSizes?: number[];
+};
+
+type ShowcaseFrameSelection = {
+  floodUrls: string[];
+  frameSizes?: number[];
+  stride: number;
+  originalCount: number;
 };
 
 type ShowcasePlaybackStatus = 'idle' | 'buffering' | 'playing' | 'paused' | 'seeking' | 'ended';
@@ -109,7 +130,22 @@ type LonLatBounds = {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const nextFrame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+const waitForFrames = async (frameCount: number) => {
+  for (let index = 0; index < frameCount; index += 1) {
+    await nextFrame();
+  }
+};
 const MB = 1024 * 1024;
+const SHOWCASE_STATS_INTERVAL_FRAMES = 4;
+const SHOWCASE_UI_INTERVAL_FRAMES = 4;
+const SHOWCASE_FIRST_FRAME_WARMUP_FRAMES = 3;
+const SHOWCASE_PREFETCH_CONCURRENCY = 6;
+const SHOWCASE_CACHE_BACK_FRAMES = 20;
+const SHOWCASE_CACHE_AHEAD_FRAMES = 180;
+const YONGCHUAN_FULL_RATE_FRAME_COUNT = 900;
+const YONGCHUAN_MID_RATE_FRAME_LIMIT = 2000;
+const YONGCHUAN_MID_FRAME_STRIDE = 5;
+const YONGCHUAN_TAIL_FRAME_STRIDE = 50;
 const activeShowcaseFetchControllers = new Set<AbortController>();
 const showcaseDockRef = ref<HTMLElement | null>(null);
 
@@ -121,6 +157,10 @@ const showcasePlayback = reactive({
   currentIndex: 0,
   sliderIndex: 0,
   totalFrames: 0,
+  cacheLoadedFrames: 0,
+  cacheTargetFrames: 0,
+  cacheLoadedBytes: 0,
+  cacheTargetBytes: 0,
   pendingSeekIndex: null as number | null,
   resumeAfterSeek: true,
   pauseAfterNextFrame: false
@@ -165,6 +205,16 @@ const showcaseFrameLabel = computed(() => {
   return `${showcaseTimelineIndex.value + 1} / ${showcasePlayback.totalFrames}`;
 });
 const showcaseEvolutionTimeLabel = computed(() => formatShowcaseElapsedTime(showcaseTimelineIndex.value));
+const showcaseCachePercent = computed(() => (
+  showcasePlayback.cacheTargetFrames > 0
+    ? Math.min(100, Math.round((showcasePlayback.cacheLoadedFrames / showcasePlayback.cacheTargetFrames) * 100))
+    : 0
+));
+const showcaseCacheBytesLabel = computed(() => {
+  const loaded = formatBytes(showcasePlayback.cacheLoadedBytes) || '0 B';
+  const target = formatBytes(showcasePlayback.cacheTargetBytes);
+  return target ? `${loaded} / ${target}` : loaded;
+});
 const showcaseStatusText = computed(() => {
   const statusMap: Record<ShowcasePlaybackStatus, string> = {
     idle: '待开始',
@@ -288,57 +338,123 @@ const fetchShowcaseJson = async (url: string) => {
   }
 };
 
-const getShowcaseDebugOffsetQuery = () => {
-  const params = new URLSearchParams(window.location.search);
-  const queryParams = new URLSearchParams();
-  const offsetMap = [
-    ['showcaseDx', 'dx'],
-    ['showcaseDy', 'dy'],
-    ['showcaseDz', 'dz'],
-    ['showcaseHeading', 'heading']
-  ];
+const getShowcasePlaybackOptions = (
+  caseId: ShowcaseCaseId,
+  manifest?: ShowcaseManifest,
+  frameSizesOverride?: number[]
+): ShowcasePlaybackOptions => {
+  const frameSizes = frameSizesOverride ?? manifest?.floodFrameSizes;
+  const baseOptions = {
+    initialBufferCount: 8,
+    prefetchCount: 8,
+    initialBufferBytes: 24 * MB,
+    prefetchBytes: 40 * MB,
+    startupBufferCount: 0,
+    startupBufferBytes: 0,
+    statsIntervalFrames: SHOWCASE_STATS_INTERVAL_FRAMES,
+    uiIntervalFrames: SHOWCASE_UI_INTERVAL_FRAMES,
+    slowFrameWarningMs: 900,
+    cacheBackFrames: SHOWCASE_CACHE_BACK_FRAMES,
+    cacheAheadFrames: SHOWCASE_CACHE_AHEAD_FRAMES,
+    prefetchConcurrency: SHOWCASE_PREFETCH_CONCURRENCY,
+    yieldEveryFrames: 0,
+    yieldMs: 0,
+    frameSizes
+  };
 
-  for (const [sourceKey, targetKey] of offsetMap) {
-    const value = params.get(sourceKey);
-    if (value !== null && Number.isFinite(Number(value))) {
-      queryParams.set(targetKey, value);
-    }
+  if (caseId === 'yongchuan') {
+    return {
+      ...baseOptions,
+      initialBufferCount: 0,
+      prefetchCount: 0,
+      initialBufferBytes: 0,
+      prefetchBytes: 0,
+      frameIntervalMs: 45,
+      statsIntervalFrames: 20,
+      uiIntervalFrames: 5,
+      slowFrameWarningMs: 450,
+      cacheBackFrames: 0,
+      cacheAheadFrames: 1,
+      prefetchConcurrency: 1,
+      yieldEveryFrames: 25,
+      yieldMs: 60
+    };
   }
 
-  const query = queryParams.toString();
-  return query ? `?${query}` : '';
-};
+  if (caseId === 'xiaojiaqiao') {
+    return {
+      ...baseOptions,
+      frameIntervalMs: 10
+    };
+  }
 
-const getShowcasePlaybackOptions = (caseId: ShowcaseCaseId, manifest?: ShowcaseManifest): ShowcasePlaybackOptions => {
   if (caseId === 'jinshajiang') {
     return {
-      initialBufferCount: 48,
-      prefetchCount: 16,
+      ...baseOptions,
       frameIntervalMs: 8
     };
   }
 
   if (caseId === 'bonn') {
     return {
-      initialBufferCount: 16,
-      prefetchCount: 6,
+      ...baseOptions,
       frameIntervalMs: 10
     };
   }
 
-  const maxFrameBytes = manifest?.maxJsonBytes ?? 0;
-  if (maxFrameBytes > 20 * MB) {
+  return {
+    ...baseOptions,
+    frameIntervalMs: 12
+  };
+};
+
+const selectShowcaseFloodFrames = (
+  caseId: ShowcaseCaseId,
+  floodUrls: string[],
+  frameSizes?: number[]
+): ShowcaseFrameSelection => {
+  if (
+    caseId !== 'yongchuan' ||
+    floodUrls.length <= YONGCHUAN_FULL_RATE_FRAME_COUNT
+  ) {
     return {
-      initialBufferCount: 24,
-      prefetchCount: 3,
-      frameIntervalMs: 12
+      floodUrls,
+      frameSizes,
+      stride: 1,
+      originalCount: floodUrls.length
     };
   }
 
+  const selectedUrls: string[] = [];
+  const selectedSizes: number[] = [];
+
+  const addFrame = (index: number) => {
+    selectedUrls.push(floodUrls[index]);
+    if (frameSizes?.length) {
+      selectedSizes.push(Math.max(0, Number(frameSizes[index]) || 0));
+    }
+  };
+
+  for (let index = 0; index < floodUrls.length; index += 1) {
+    if (
+      index < YONGCHUAN_FULL_RATE_FRAME_COUNT ||
+      (index < YONGCHUAN_MID_RATE_FRAME_LIMIT && index % YONGCHUAN_MID_FRAME_STRIDE === 0) ||
+      index % YONGCHUAN_TAIL_FRAME_STRIDE === 0
+    ) {
+      addFrame(index);
+    }
+  }
+
+  const lastIndex = floodUrls.length - 1;
+  if (selectedUrls[selectedUrls.length - 1] !== floodUrls[lastIndex]) {
+    addFrame(lastIndex);
+  }
+
   return {
-    initialBufferCount: 24,
-    prefetchCount: 4,
-    frameIntervalMs: 12
+    floodUrls: selectedUrls,
+    frameSizes: frameSizes?.length ? selectedSizes : undefined,
+    stride: YONGCHUAN_TAIL_FRAME_STRIDE,
+    originalCount: floodUrls.length
   };
 };
 
@@ -869,10 +985,15 @@ const resetFloodData = () => {
   showcasePlayback.visible = false;
   showcasePlayback.status = 'idle';
   showcasePlayback.caseId = null;
+  currentShowcaseCaseId.value = null;
   showcasePlayback.caseName = '';
   showcasePlayback.currentIndex = 0;
   showcasePlayback.sliderIndex = 0;
   showcasePlayback.totalFrames = 0;
+  showcasePlayback.cacheLoadedFrames = 0;
+  showcasePlayback.cacheTargetFrames = 0;
+  showcasePlayback.cacheLoadedBytes = 0;
+  showcasePlayback.cacheTargetBytes = 0;
   showcasePlayback.pendingSeekIndex = null;
   showcasePlayback.resumeAfterSeek = true;
   showcasePlayback.pauseAfterNextFrame = false;
@@ -886,7 +1007,8 @@ const renderPrefetchedFloodFrames = async (
   onFirstPrimitive?: (primitive: Cesium.Primitive) => void,
   startIndex = 0
 ) => {
-  const preloadQueue = new Map<string, Promise<any>>();
+  const frameCache = new Map<number, any>();
+  const inFlightFrames = new Map<number, Promise<any>>();
   let firstPrimitive: Cesium.Primitive | null = null;
   let latestPrimitive: Cesium.Primitive | null = null;
   let hasCalledFirstPrimitive = false;
@@ -902,15 +1024,120 @@ const renderPrefetchedFloodFrames = async (
     return targetIndex;
   };
 
-  const preloadRange = (startIndex: number, count: number) => {
-    const endIndex = Math.min(floodUrls.length, startIndex + count);
-    for (let i = startIndex; i < endIndex; i += 1) {
-      const url = floodUrls[i];
-      if (!preloadQueue.has(url)) {
-        const preloadPromise = readJsonData(url);
-        preloadPromise.catch(() => undefined);
-        preloadQueue.set(url, preloadPromise);
+  const getBufferedFrameCount = (startIndex: number, maxCount: number, byteBudget: number) => {
+    const remainingFrames = Math.max(0, floodUrls.length - startIndex);
+    const safeMaxCount = Math.min(maxCount, remainingFrames);
+    if (safeMaxCount <= 0) {
+      return 0;
+    }
+
+    const frameSizes = options.frameSizes;
+    if (!frameSizes?.length || byteBudget <= 0) {
+      return safeMaxCount;
+    }
+
+    let totalBytes = 0;
+    let count = 0;
+    for (let index = startIndex; index < startIndex + safeMaxCount; index += 1) {
+      const frameBytes = Math.max(0, Number(frameSizes[index]) || 0);
+      if (count > 0 && totalBytes + frameBytes > byteBudget) {
+        break;
       }
+      totalBytes += frameBytes;
+      count += 1;
+    }
+
+    return Math.max(1, count);
+  };
+
+  const fetchFrame = async (frameIndex: number) => {
+    if (frameCache.has(frameIndex)) {
+      return frameCache.get(frameIndex);
+    }
+
+    const existingPromise = inFlightFrames.get(frameIndex);
+    if (existingPromise) {
+      return existingPromise;
+    }
+
+    const framePromise = readJsonData(floodUrls[frameIndex])
+      .then((jsonData) => {
+        frameCache.set(frameIndex, jsonData);
+        inFlightFrames.delete(frameIndex);
+        return jsonData;
+      })
+      .catch((error) => {
+        inFlightFrames.delete(frameIndex);
+        throw error;
+      });
+
+    inFlightFrames.set(frameIndex, framePromise);
+    return framePromise;
+  };
+
+  const pruneFrameCache = (currentIndex: number) => {
+    const minIndex = Math.max(0, currentIndex - options.cacheBackFrames);
+    const maxIndex = Math.min(floodUrls.length - 1, currentIndex + options.cacheAheadFrames);
+
+    frameCache.forEach((_, frameIndex) => {
+      if (frameIndex < minIndex || frameIndex > maxIndex) {
+        frameCache.delete(frameIndex);
+      }
+    });
+  };
+
+  const prefetchFrames = (startIndex: number, maxCount: number, byteBudget: number) => {
+    const prefetchCount = getBufferedFrameCount(startIndex, maxCount, byteBudget);
+    const endIndex = Math.min(floodUrls.length, startIndex + prefetchCount);
+    for (let frameIndex = startIndex; frameIndex < endIndex; frameIndex += 1) {
+      if (inFlightFrames.size >= options.prefetchConcurrency) {
+        break;
+      }
+
+      if (frameCache.has(frameIndex) || inFlightFrames.has(frameIndex)) {
+        continue;
+      }
+
+      fetchFrame(frameIndex).catch((error) => {
+        if (!isAbortError(error)) {
+          console.warn('Showcase prefetch failed:', error);
+        }
+      });
+    }
+  };
+
+  const prefetchAhead = (startIndex: number) => {
+    prefetchFrames(startIndex, options.prefetchCount, options.prefetchBytes);
+  };
+
+  const warmStartupFrames = async (startIndex: number) => {
+    const startupCount = getBufferedFrameCount(
+      startIndex,
+      options.startupBufferCount,
+      options.startupBufferBytes
+    );
+    const endIndex = Math.min(floodUrls.length, startIndex + startupCount);
+    const frameSizes = options.frameSizes;
+    const targetBytes = frameSizes?.length
+      ? frameSizes
+        .slice(startIndex, endIndex)
+        .reduce((sum, value) => sum + Math.max(0, Number(value) || 0), 0)
+      : options.startupBufferBytes;
+
+    showcasePlayback.cacheLoadedFrames = 0;
+    showcasePlayback.cacheTargetFrames = Math.max(0, endIndex - startIndex);
+    showcasePlayback.cacheLoadedBytes = 0;
+    showcasePlayback.cacheTargetBytes = targetBytes;
+
+    for (let frameIndex = startIndex; frameIndex < endIndex; frameIndex += 1) {
+      if (!isPlaybackCurrent(token) || showcasePlayback.pendingSeekIndex !== null) {
+        return;
+      }
+
+      await fetchFrame(frameIndex);
+      showcasePlayback.cacheLoadedFrames += 1;
+      showcasePlayback.cacheLoadedBytes += Math.max(0, Number(frameSizes?.[frameIndex]) || 0);
+      await nextFrame();
     }
   };
 
@@ -926,36 +1153,21 @@ const renderPrefetchedFloodFrames = async (
     return isPlaybackCurrent(token);
   };
 
-  const bufferFrom = async (bufferStartIndex: number) => {
-    const initialBufferCount = Math.min(floodUrls.length - bufferStartIndex, options.initialBufferCount);
-    preloadRange(bufferStartIndex, initialBufferCount);
-
-    for (let i = bufferStartIndex; i < bufferStartIndex + initialBufferCount; i += 1) {
-      if (!isPlaybackCurrent(token) || showcasePlayback.pendingSeekIndex !== null) {
-        return;
-      }
-
-      const url = floodUrls[i];
-      try {
-        await (preloadQueue.get(url) ?? readJsonData(url));
-      } catch (error) {
-        preloadQueue.delete(url);
-        if (isAbortError(error) && isPlaybackCurrent(token)) {
-          return;
-        }
-        throw error;
-      }
-    }
-  };
-
   let index = clampShowcaseFrameIndex(startIndex);
   showcasePlayback.currentIndex = index;
   showcasePlayback.sliderIndex = index;
-  await bufferFrom(index);
-  if (isPlaybackCurrent(token) && showcasePlayback.status === 'buffering') {
-    showcasePlayback.status = 'playing';
+  prefetchFrames(index, options.initialBufferCount, options.initialBufferBytes);
+  if (options.startupBufferCount > 0 && options.startupBufferBytes > 0) {
+    coordMessage.value = '正在缓存前段关键帧...';
+    await warmStartupFrames(index);
+    coordMessage.value = '前段关键帧已就绪，正在播放案例数据...';
+  } else {
+    showcasePlayback.cacheLoadedFrames = 0;
+    showcasePlayback.cacheTargetFrames = 0;
+    showcasePlayback.cacheLoadedBytes = 0;
+    showcasePlayback.cacheTargetBytes = 0;
+    coordMessage.value = '正在读取首帧并开始播放...';
   }
-  coordMessage.value = '缓冲完成，正在播放案例数据...';
 
   while (index < floodUrls.length) {
     if (!isPlaybackCurrent(token)) {
@@ -964,29 +1176,25 @@ const renderPrefetchedFloodFrames = async (
 
     const seekIndex = consumePendingSeekIndex();
     if (seekIndex !== null) {
-      preloadQueue.clear();
+      inFlightFrames.clear();
       index = seekIndex;
       showcasePlayback.currentIndex = index;
       showcasePlayback.sliderIndex = index;
       showcasePlayback.status = 'seeking';
-      await bufferFrom(index);
-      if (!isPlaybackCurrent(token)) {
-        break;
-      }
+      pruneFrameCache(index);
+      prefetchAhead(index);
     }
 
     if (!(await waitUntilPlayable())) {
       break;
     }
 
-    preloadRange(index, options.prefetchCount);
     const url = floodUrls[index];
     let jsonData: any;
+    const fetchStartedAt = performance.now();
     try {
-      jsonData = await (preloadQueue.get(url) ?? readJsonData(url));
-      preloadQueue.delete(url);
+      jsonData = await fetchFrame(index);
     } catch (error) {
-      preloadQueue.delete(url);
       if (isAbortError(error) && isPlaybackCurrent(token)) {
         continue;
       }
@@ -1002,17 +1210,31 @@ const renderPrefetchedFloodFrames = async (
     }
 
     const frameStartedAt = performance.now();
+    const fetchMs = frameStartedAt - fetchStartedAt;
+    const isFirstFrame = index === 0;
+    const isLastFrame = index === floodUrls.length - 1;
+    const shouldUpdateStats = isFirstFrame || isLastFrame || index % options.statsIntervalFrames === 0;
+    const shouldUpdateUi = isFirstFrame || isLastFrame || index % options.uiIntervalFrames === 0;
     lastLoadedFloodJson.value = jsonData;
+    // 面积属于当前渲染帧的即时指标，拖动、回退和逐帧播放时都必须更新。
     recordFloodAreaPoint(index + 1, jsonData, floodCellSize.value);
-    recordFloodPointDepth(index + 1, jsonData);
+    if (shouldUpdateStats) {
+      recordFloodPointDepth(index + 1, jsonData);
+    }
+    const meshStartedAt = performance.now();
     const primitive = DrawTriangleMesh(jsonData);
+    const meshMs = performance.now() - meshStartedAt;
+    const sceneStartedAt = performance.now();
     removeCurrentFloodPrimitive();
 
     currentFloodPrimitive.value = primitive;
     props.viewer.scene.primitives.add(primitive);
+    const sceneMs = performance.now() - sceneStartedAt;
     latestPrimitive = primitive;
-    showcasePlayback.currentIndex = index;
-    showcasePlayback.sliderIndex = index;
+    if (shouldUpdateUi) {
+      showcasePlayback.currentIndex = index;
+      showcasePlayback.sliderIndex = index;
+    }
 
     if (!firstPrimitive) {
       firstPrimitive = primitive;
@@ -1021,12 +1243,37 @@ const renderPrefetchedFloodFrames = async (
     if (!hasCalledFirstPrimitive) {
       hasCalledFirstPrimitive = true;
       onFirstPrimitive?.(primitive);
+      if (isPlaybackCurrent(token) && showcasePlayback.status === 'buffering') {
+        showcasePlayback.status = 'playing';
+        showcasePlayback.cacheTargetFrames = 0;
+      }
+      if (isFirstFrame && isPlaybackCurrent(token)) {
+        coordMessage.value = '首帧已就绪，正在预热渲染管线...';
+        await waitForFrames(SHOWCASE_FIRST_FRAME_WARMUP_FRAMES);
+      }
     }
 
-    if (index === 0 || index === floodUrls.length - 1 || index % progressStep === 0) {
+    if (shouldUpdateUi && (isFirstFrame || isLastFrame || index % progressStep === 0)) {
       coordMessage.value = `正在播放案例数据：${index + 1}/${floodUrls.length}`;
       console.log("Flood data loaded and rendered:", url);
     }
+    const frameWorkMs = performance.now() - frameStartedAt;
+    if (frameWorkMs > options.slowFrameWarningMs) {
+      console.warn(
+        `[Showcase] slow frame ${index + 1}/${floodUrls.length} (${url})`,
+        {
+          fetchMs: Math.round(fetchMs),
+          meshMs: Math.round(meshMs),
+          sceneMs: Math.round(sceneMs),
+          totalMs: Math.round(frameWorkMs),
+          vertices: jsonData?.Depth?.[0]?.length ?? 0,
+          triangles: Math.floor((jsonData?.Face?.length ?? 0) / 3)
+        }
+      );
+    }
+
+    prefetchAhead(index + 1);
+    pruneFrameCache(index);
 
     if (showcasePlayback.status === 'seeking') {
       showcasePlayback.status = showcasePlayback.resumeAfterSeek ? 'playing' : 'paused';
@@ -1035,6 +1282,15 @@ const renderPrefetchedFloodFrames = async (
     if (showcasePlayback.pauseAfterNextFrame) {
       showcasePlayback.pauseAfterNextFrame = false;
       showcasePlayback.status = 'paused';
+    }
+
+    if (
+      options.yieldEveryFrames > 0 &&
+      options.yieldMs > 0 &&
+      (index + 1) % options.yieldEveryFrames === 0
+    ) {
+      await sleep(options.yieldMs);
+      await nextFrame();
     }
 
     const waitMs = Math.max(0, options.frameIntervalMs - (performance.now() - frameStartedAt));
@@ -1066,7 +1322,8 @@ const playShowcase = async (
 
   try {
     coordMessage.value = '正在读取案例数据...';
-    const manifest = await fetchJson(`http://localhost:5000/api/showcase/${caseId}/manifest${getShowcaseDebugOffsetQuery()}`) as ShowcaseManifest;
+    const manifestUrl = `/data/showcase/${caseId}/manifest.json`;
+    const manifest = await fetchJson(manifestUrl) as ShowcaseManifest;
     if (!manifest.success) {
       throw new Error(manifest.message || '案例清单读取失败');
     }
@@ -1086,30 +1343,42 @@ const playShowcase = async (
       throw new Error('案例缺少 ASC 文件和中心点配置');
     }
 
-    const floodUrls = manifest.floodUrls?.length
+    const rawFloodUrls = manifest.floodUrls?.length
       ? manifest.floodUrls
       : parseFloodUrlsFromXml(await fetchText(`${manifest.fileBaseUrl}/${encodeFileName(manifest.xmlFile)}`));
-    if (floodUrls.length === 0) {
+    if (rawFloodUrls.length === 0) {
       throw new Error('案例 XML 中没有可播放的洪水帧，请检查 JSON 文件是否存在');
     }
 
+    const frameSelection = selectShowcaseFloodFrames(caseId, rawFloodUrls, manifest.floodFrameSizes);
+    const floodUrls = frameSelection.floodUrls;
+    const optimizedFrameSizes = frameSelection.frameSizes;
+    const optimizedTotalBytes = optimizedFrameSizes?.reduce((sum, size) => sum + size, 0);
     const normalizedStartIndex = Math.min(Math.max(Math.round(startFrameIndex), 0), floodUrls.length - 1);
     showcasePlayback.visible = true;
     showcasePlayback.status = 'buffering';
     showcasePlayback.caseId = caseId;
+    currentShowcaseCaseId.value = caseId;
     showcasePlayback.caseName = manifest.name;
     showcasePlayback.totalFrames = floodUrls.length;
     showcasePlayback.currentIndex = normalizedStartIndex;
     showcasePlayback.sliderIndex = normalizedStartIndex;
+    showcasePlayback.cacheLoadedFrames = 0;
+    showcasePlayback.cacheTargetFrames = 0;
+    showcasePlayback.cacheLoadedBytes = 0;
+    showcasePlayback.cacheTargetBytes = 0;
     showcasePlayback.pendingSeekIndex = null;
     showcasePlayback.resumeAfterSeek = true;
     showcasePlayback.pauseAfterNextFrame = options.pauseOnFirstFrame ?? false;
 
-    const playbackOptions = getShowcasePlaybackOptions(caseId, manifest);
+    const playbackOptions = getShowcasePlaybackOptions(caseId, manifest, optimizedFrameSizes);
     const missingText = manifest.missingJsonCount ? `，跳过缺失 ${manifest.missingJsonCount} 帧` : '';
     const excludedText = manifest.excludedJsonCount ? `，剔除异常 ${manifest.excludedJsonCount} 帧` : '';
-    const sizeText = formatBytes(manifest.totalJsonBytes);
-    coordMessage.value = `正在缓冲 ${manifest.name}：逐帧播放 ${floodUrls.length} 帧${sizeText ? `，约 ${sizeText}` : ''}${missingText}${excludedText}`;
+    const sizeText = formatBytes(optimizedTotalBytes ?? manifest.totalJsonBytes);
+    const optimizedText = frameSelection.stride > 1
+      ? `，分段抽帧 ${frameSelection.originalCount} → ${floodUrls.length} 帧`
+      : '';
+    coordMessage.value = `正在缓冲 ${manifest.name}：逐帧播放 ${floodUrls.length} 帧${optimizedText}${sizeText ? `，约 ${sizeText}` : ''}${missingText}${excludedText}`;
     const jsonBaseDir = manifest.jsonBaseDir || manifest.xmlDir;
     let firstShowcasePrimitive: Cesium.Primitive | null = null;
     await renderPrefetchedFloodFrames(token, floodUrls, (url) => (
@@ -1124,16 +1393,15 @@ const playShowcase = async (
     });
 
     if (isPlaybackCurrent(token)) {
-      if (caseId === 'xiaojiaqiao') {
-        flyToFirstPrimitive(firstShowcasePrimitive, bounds, { legacyView: true });
-      }
       showcasePlayback.status = 'ended';
       showcasePlayback.currentIndex = floodUrls.length - 1;
       showcasePlayback.sliderIndex = floodUrls.length - 1;
       coordMessage.value = `${manifest.name} 逐帧播放完成：共 ${floodUrls.length} 帧`;
     }
   } catch (error) {
-    console.error("Error loading showcase flood data:", error);
+    if (!isAbortError(error)) {
+      console.error("Error loading showcase flood data:", error);
+    }
     if (isPlaybackCurrent(token)) {
       coordMessage.value = error instanceof Error ? error.message : '案例数据加载失败';
       showcasePlayback.status = isAbortError(error) ? 'ended' : showcasePlayback.status;
@@ -1176,6 +1444,20 @@ defineExpose({ playShowcase, resetFloodData });
             >
               ×
             </button>
+          </div>
+        </div>
+
+        <div v-if="showcasePlayback.status === 'buffering' && showcasePlayback.cacheTargetFrames > 0" class="showcase-cache-progress">
+          <div class="showcase-cache-meta">
+            <span>正在缓存案例数据</span>
+            <strong>{{ showcasePlayback.cacheLoadedFrames }} / {{ showcasePlayback.cacheTargetFrames }} 帧</strong>
+          </div>
+          <div class="showcase-cache-track">
+            <i :style="{ width: `${showcaseCachePercent}%` }"></i>
+          </div>
+          <div class="showcase-cache-foot">
+            <span>{{ showcaseCacheBytesLabel }}</span>
+            <b>{{ showcaseCachePercent }}%</b>
           </div>
         </div>
 
@@ -1475,6 +1757,50 @@ defineExpose({ playShowcase, resetFloodData });
 .showcase-progress-row {
   gap: 12px;
   margin-bottom: 14px;
+}
+
+.showcase-cache-progress {
+  margin: -2px 0 12px;
+  padding: 9px 10px;
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 8px;
+  background: rgba(2, 18, 32, 0.52);
+  box-shadow: inset 0 0 18px rgba(0, 229, 255, 0.06);
+}
+
+.showcase-cache-meta,
+.showcase-cache-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #9eddf1;
+  font-size: 12px;
+}
+
+.showcase-cache-meta strong,
+.showcase-cache-foot b {
+  color: #f7fcff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.showcase-cache-track {
+  position: relative;
+  height: 7px;
+  margin: 8px 0 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.showcase-cache-track i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #00e5ff, #48f2a6);
+  box-shadow: 0 0 12px rgba(0, 229, 255, 0.45);
+  transition: width 0.18s ease;
 }
 
 .showcase-progress-row input[type="range"] {

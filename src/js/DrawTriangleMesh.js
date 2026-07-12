@@ -67,7 +67,8 @@ import MultiColorTriangleAppearance from './Plugin/MultiColorTriangleAppearance.
             })
         });
 
-        //计算法线的平均值
+        // Cesium's primitive pipeline uses the computed normal data to produce
+        // the compressedAttributes expected by this custom appearance.
         var meshGeo=Cesium.GeometryPipeline.computeNormal(new Cesium.Geometry({
             attributes : attributes,
             indices : triiIndex,
@@ -183,5 +184,126 @@ import MultiColorTriangleAppearance from './Plugin/MultiColorTriangleAppearance.
             localY: localPosition.y,
             cellSize: gridCellSize
         };
+    };
+
+    DrawTriangleMesh.createMeshPrimitive=function (options){
+        var mesh = options.mesh;
+        var stats = options.stats || mesh.stats || {};
+        var alpha = typeof options.alpha === 'number' ? options.alpha : 0.78;
+        var heightScale = typeof options.heightScale === 'number' ? options.heightScale : 1;
+        var surfaceOffset = typeof options.surfaceOffset === 'number' ? options.surfaceOffset : 1.2;
+        var terrainHeights = options.terrainHeights;
+        var colorRamp = Array.isArray(options.colorRamp) && options.colorRamp.length
+            ? options.colorRamp
+            : ['#d9fbff', '#87d8f5', '#3b9fe0', '#1766bd', '#102f83'];
+        var vertexCount = Array.isArray(mesh.values) ? mesh.values.length : 0;
+        var packedPositions = new Float64Array(vertexCount * 3);
+        var colors = new Uint8Array(vertexCount * 4);
+
+        function hexToRgb(color){
+            var normalized = String(color).replace('#', '');
+            if(normalized.length === 3){
+                normalized = normalized.split('').map(function(char){ return char + char; }).join('');
+            }
+            var value = Number.parseInt(normalized, 16);
+            return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
+        }
+
+        function colorFor(value, minValue, maxValue){
+            var ramp = colorRamp.map(function(color){
+                return Array.isArray(color) ? color : hexToRgb(color);
+            });
+            var range = Math.max(maxValue - minValue, 0.000001);
+            var ratio = Cesium.Math.clamp((value - minValue) / range, 0, 1);
+            var scaled = ratio * (ramp.length - 1);
+            var lower = Math.floor(scaled);
+            var upper = Math.min(lower + 1, ramp.length - 1);
+            var t = scaled - lower;
+            return [
+                Math.round(Cesium.Math.lerp(ramp[lower][0], ramp[upper][0], t)),
+                Math.round(Cesium.Math.lerp(ramp[lower][1], ramp[upper][1], t)),
+                Math.round(Cesium.Math.lerp(ramp[lower][2], ramp[upper][2], t)),
+                Math.round(Cesium.Math.clamp(alpha, 0, 1) * 255)
+            ];
+        }
+
+        var minValue = Number.isFinite(stats.minValue) ? stats.minValue : Number.POSITIVE_INFINITY;
+        var maxValue = Number.isFinite(stats.maxValue) ? stats.maxValue : Number.NEGATIVE_INFINITY;
+        if(!Number.isFinite(minValue) || !Number.isFinite(maxValue)){
+            for(var valueIndex = 0; valueIndex < vertexCount; valueIndex += 1){
+                var statValue = Number(mesh.values[valueIndex]) || 0;
+                minValue = Math.min(minValue, statValue);
+                maxValue = Math.max(maxValue, statValue);
+            }
+        }
+        if(!Number.isFinite(minValue) || !Number.isFinite(maxValue)){
+            minValue = 0;
+            maxValue = 1;
+        }
+
+        for(var index = 0; index < vertexCount; index += 1){
+            var lon = Number(mesh.positions[index * 2]);
+            var lat = Number(mesh.positions[index * 2 + 1]);
+            var value = Number(mesh.values[index]) || 0;
+            var terrainHeight = terrainHeights ? (Number(terrainHeights[index]) || 0) : 0;
+            var height = terrainHeight + Math.max(0, value) * heightScale + surfaceOffset;
+            var cartesian = Cesium.Cartesian3.fromDegrees(lon, lat, height);
+            var color = colorFor(value, minValue, maxValue);
+            Cesium.Cartesian3.pack(cartesian, packedPositions, index * 3);
+            colors.set(color, index * 4);
+        }
+
+        var indices = Cesium.IndexDatatype.createTypedArray(vertexCount, mesh.triangles.length);
+        for(index = 0; index < mesh.triangles.length; index += 3){
+            indices[index] = mesh.triangles[index + 2];
+            indices[index + 1] = mesh.triangles[index + 1];
+            indices[index + 2] = mesh.triangles[index];
+        }
+
+        var geometry = new Cesium.Geometry({
+            attributes : new Cesium.GeometryAttributes({
+                position : new Cesium.GeometryAttribute({
+                    componentDatatype : Cesium.ComponentDatatype.DOUBLE,
+                    componentsPerAttribute : 3,
+                    values : packedPositions
+                }),
+                color : new Cesium.GeometryAttribute({
+                    componentDatatype : Cesium.ComponentDatatype.UNSIGNED_BYTE,
+                    normalize : true,
+                    componentsPerAttribute : 4,
+                    values : colors
+                })
+            }),
+            indices : indices,
+            primitiveType : Cesium.PrimitiveType.TRIANGLES,
+            boundingSphere : Cesium.BoundingSphere.fromVertices(packedPositions)
+        });
+
+        var primitive = new Cesium.Primitive({
+            geometryInstances : new Cesium.GeometryInstance({
+                geometry : geometry,
+                id: options.id || 'flood-mesh',
+                colorsPerVertex: true
+            }),
+            appearance:new Cesium.PerInstanceColorAppearance({
+                flat: true,
+                translucent: alpha < 1,
+                renderState: {
+                    depthTest: {
+                        enabled: true
+                    },
+                    depthMask: false,
+                    blending: Cesium.BlendingState.ALPHA_BLEND
+                }
+            }),
+            asynchronous: false,
+            show: true
+        });
+
+        if(geometry && geometry.boundingSphere){
+            primitive._boundingSphereWorld = Cesium.BoundingSphere.clone(geometry.boundingSphere);
+        }
+
+        return primitive;
     };
    export default DrawTriangleMesh;
