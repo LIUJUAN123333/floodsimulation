@@ -83,7 +83,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 
-type ShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
+type ShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao';
 
 const emit = defineEmits<{
   showcase: [caseId: ShowcaseCaseId];
@@ -93,7 +93,6 @@ const emit = defineEmits<{
 import imgYongchuan from '../案例图片/永川.png';
 import imgXiaojiaqiao from '../案例图片/肖家桥.png';
 import imgJinsha from '../案例图片/金沙江.png';
-// import imgBonn from '../案例图片/德国波恩.png'; // 提示：请补充图片后取消注释
 
 // 原始数据源
 const cases = ref([
@@ -117,13 +116,6 @@ const cases = ref([
     img: imgJinsha,
     desc: '金沙江白格高位滑坡曾引发堵江蓄水及溃坝特大洪水灾害。本案例引入多变量耦合元胞自动机（CA）模型，通过局部邻域的状态迭代实现大尺度复杂灾害全链条的快速高精度仿真。',
     tags: ['洪水灾害', '堰塞湖', '灾害全链条', 'SHOWCASE']
-  },
-  {
-    id: 'bonn',
-    title: '德国波恩',
-    img: imgJinsha, // 提示：暂时使用金沙江图片占位，有了图片后请换成 imgBonn
-    desc: '位于莱茵河畔的德国波恩（Bonn）曾经历极端暴雨引发的城市内涝与洪水。本案例结合高分辨率城市DEM及实体建筑模型信息，通过精细化的网格动态计算，推演城市建筑密集区内复杂的地表水汇聚、演进与积水过程，为城市应急防涝提供决策支持。',
-    tags: ['城市内涝', '暴雨洪涝', '三维淹没', 'SHOWCASE']
   }
 ]);
 
@@ -168,7 +160,7 @@ const selectTag = (tag: string) => {
 };
 
 const emitShowcase = (caseId: string) => {
-  if (caseId === 'yongchuan' || caseId === 'jinshajiang' || caseId === 'xiaojiaqiao' || caseId === 'bonn') {
+  if (caseId === 'yongchuan' || caseId === 'jinshajiang' || caseId === 'xiaojiaqiao') {
     emit('showcase', caseId as ShowcaseCaseId);
   }
 };

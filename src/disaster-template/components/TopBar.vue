@@ -17,11 +17,8 @@ const props = withDefaults(
 const dateStr = ref('');
 const timeStr = ref('');
 const weekStr = ref('');
-const temperature = ref('25°C');
-const weatherIcon = ref('🌤️');
 
 let timer: ReturnType<typeof setInterval> | null = null;
-let weatherTimer: ReturnType<typeof setInterval> | null = null;
 const weekDays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
 
 const subsystemItems = computed(() => [
@@ -72,27 +69,13 @@ const updateTime = () => {
   weekStr.value = weekDays[now.getDay()];
 };
 
-// 模拟获取实时天气/温度（实际项目中建议替换为真实的天气API，如高德、和风天气等）
-const fetchWeather = () => {
-  // 这里做一个简单的温度模拟微调，让它看起来在“实时”变化
-  const baseTemp = 25;
-  const variance = Math.floor(Math.random() * 3) - 1; // -1, 0, 1
-  temperature.value = `${baseTemp + variance}°C`;
-  
-  const icons = ['🌤️', '⛅', '🌥️', '☀️'];
-  weatherIcon.value = icons[Math.floor(Math.random() * icons.length)];
-};
-
 onMounted(() => {
   updateTime();
-  fetchWeather();
   timer = setInterval(updateTime, 1000);
-  weatherTimer = setInterval(fetchWeather, 1000 * 60 * 30); // 每半小时更新一次天气
 });
 
 onUnmounted(() => {
   if (timer) clearInterval(timer);
-  if (weatherTimer) clearInterval(weatherTimer);
 });
 </script>
 
@@ -156,7 +139,7 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <!-- 右侧内容：菜单、天气、时间 -->
+      <!-- 右侧内容：菜单、时间 -->
       <div class="top-right-container">
         <div class="nav-menu">
           <div
@@ -168,11 +151,6 @@ onUnmounted(() => {
           >
             {{ menu.name }}
           </div>
-        </div>
-
-        <div class="weather-display">
-          <span class="weather-icon">{{ weatherIcon }}</span>
-          <span class="temperature-text">{{ temperature }}</span>
         </div>
 
         <div class="time-display-container">
@@ -293,33 +271,6 @@ onUnmounted(() => {
   color: var(--sys-theme-color, #00e5ff);
   text-shadow: 0 0 10px rgba(0, 229, 255, 0.6);
   font-weight: 600;
-}
-
-.weather-display {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0; /* 去掉原有内间距 */
-  height: auto;
-  background: transparent; /* 去掉外部方框背景 */
-  border: none;
-  border-radius: 0;
-  box-shadow: none; /* 去掉内阴影 */
-  margin-right: 0;
-}
-
-.weather-icon {
-  font-size: 18px;
-  filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.4));
-}
-
-.temperature-text {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  font-size: 16px;
-  font-weight: 500;
-  color: #fff;
-  text-shadow: 0 0 8px rgba(0, 229, 255, 0.5);
-  letter-spacing: 1px;
 }
 
 .time-display-container {

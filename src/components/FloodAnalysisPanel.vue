@@ -2,13 +2,12 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import * as Cesium from 'cesium';
 import DrawTriangleMesh from '../js/DrawTriangleMesh';
+import AccuracyEvaluationPanel from './AccuracyEvaluationPanel.vue';
 import {
   clearFloodDepthMonitorPoint,
-  currentFloodAreaM2,
   currentFloodFrame,
   currentFloodPointDepthM,
   currentShowcaseCaseId,
-  floodAreaSeries,
   floodPointDepthSeries,
   lastLoadedFloodJson,
   recordFloodPointDepth,
@@ -198,65 +197,39 @@ const hasSelectedCaseLayer = computed(() => activeLayerConfig.value !== null);
 const activeBuildingLayerLabel = computed(() => activeLayerConfig.value?.buildingLabel ?? '未选择案例');
 const activeRoadLayerLabel = computed(() => activeLayerConfig.value?.roadLabel ?? '未选择案例');
 
-const sortedAreaSeries = computed(() => (
-  floodAreaSeries.value
-    .filter((point) => Number.isFinite(point.frame) && Number.isFinite(point.areaM2))
-    .sort((a, b) => a.frame - b.frame)
-));
-
 const sortedDepthSeries = computed(() => (
   floodPointDepthSeries.value
     .filter((point) => Number.isFinite(point.frame) && Number.isFinite(point.depthM))
     .sort((a, b) => a.frame - b.frame)
 ));
 
-const firstAreaPoint = computed(() => sortedAreaSeries.value[0] ?? null);
 const latestDepthPoint = computed(() => {
   const series = sortedDepthSeries.value;
   return series.length ? series[series.length - 1] : null;
 });
 
-const hasAreaData = computed(() => sortedAreaSeries.value.length > 0);
 const hasDepthPoint = computed(() => selectedFloodDepthPoint.value !== null);
 const hasDepthData = computed(() => sortedDepthSeries.value.length > 0);
-// “当前范围”必须跟随当前实际渲染帧，而不是历史序列中帧号最大的点。
-const latestAreaM2 = computed(() => currentFloodAreaM2.value);
-const maxAreaM2 = computed(() => Math.max(0, ...sortedAreaSeries.value.map((point) => point.areaM2)));
-const minAreaM2 = computed(() => sortedAreaSeries.value.length
-  ? Math.min(...sortedAreaSeries.value.map((point) => point.areaM2))
-  : 0
+type AnalysisGroupId = 'depth' | 'assets' | 'accuracy';
+
+const analysisGroups = ref<Array<{ id: AnalysisGroupId; title: string; expanded: boolean }>>([
+  { id: 'depth', title: '点位水深分析', expanded: false },
+  { id: 'assets', title: '承灾体淹没分析', expanded: false },
+  { id: 'accuracy', title: '精度评价', expanded: false }
+]);
+
+const isAnalysisGroupExpanded = (id: AnalysisGroupId) => (
+  analysisGroups.value.find((group) => group.id === id)?.expanded ?? false
 );
-const areaChangeM2 = computed(() => (
-  firstAreaPoint.value
-    ? currentFloodAreaM2.value - firstAreaPoint.value.areaM2
-    : 0
-));
+
+const toggleAnalysisGroup = (id: AnalysisGroupId) => {
+  const group = analysisGroups.value.find((item) => item.id === id);
+  if (group) {
+    group.expanded = !group.expanded;
+  }
+};
 const maxDepthM = computed(() => Math.max(0, ...sortedDepthSeries.value.map((point) => point.depthM)));
 const latestDepthM = computed(() => latestDepthPoint.value?.depthM ?? currentFloodPointDepthM.value);
-
-const formatArea = (areaM2: number) => {
-  const safeArea = Math.max(0, Math.abs(areaM2));
-
-  if (safeArea >= 1_000_000) {
-    const km2 = safeArea / 1_000_000;
-    return `${km2 >= 10 ? km2.toFixed(1) : km2.toFixed(2)} km2`;
-  }
-
-  if (safeArea >= 10_000) {
-    const hm2 = safeArea / 10_000;
-    return `${hm2 >= 10 ? hm2.toFixed(1) : hm2.toFixed(2)} hm2`;
-  }
-
-  return `${safeArea >= 100 ? safeArea.toFixed(0) : safeArea.toFixed(1)} m2`;
-};
-
-const formatSignedArea = (areaM2: number) => {
-  if (Math.abs(areaM2) < 0.001) {
-    return '0 m2';
-  }
-
-  return `${areaM2 > 0 ? '+' : '-'}${formatArea(areaM2)}`;
-};
 
 const formatDepth = (depthM: number) => {
   if (!Number.isFinite(depthM)) {
@@ -347,16 +320,6 @@ const buildYTicks = (maxValue: number, formatter: (value: number) => string) => 
   ];
 };
 
-const areaChartPoints = computed(() => buildChartPoints(
-  sortedAreaSeries.value.map((point) => ({ frame: point.frame, value: point.areaM2 })),
-  maxAreaM2.value
-));
-const areaLinePoints = computed(() => buildLine(areaChartPoints.value));
-const areaFillPoints = computed(() => buildFill(areaChartPoints.value, areaLinePoints.value));
-const areaDotPoints = computed(() => sampleDots(areaChartPoints.value));
-const areaYTicks = computed(() => buildYTicks(maxAreaM2.value, formatArea));
-const areaXTicks = computed(() => buildXTicks(sortedAreaSeries.value));
-
 const depthChartPoints = computed(() => buildChartPoints(
   sortedDepthSeries.value.map((point) => ({ frame: point.frame, value: point.depthM })),
   maxDepthM.value
@@ -384,9 +347,6 @@ const depthSampleStatus = computed(() => {
   return '未淹没或超出范围';
 });
 
-const areaSeriesSummaryLabel = computed(() => (
-  currentFloodFrame.value > 0 ? `当前第 ${currentFloodFrame.value} 帧` : '暂无数据'
-));
 const depthSeriesSummaryLabel = computed(() => (
   latestDepthPoint.value ? `至 ${latestDepthPoint.value.frame} 帧` : depthSampleStatus.value
 ));
@@ -507,6 +467,12 @@ const pickCartesian = (position: Cesium.Cartesian2 | undefined) => {
   return ray ? viewer.scene.globe.pick(ray, viewer.scene) ?? null : null;
 };
 
+const isCachedMeshFloodData = (data: any) => (
+  Array.isArray(data?.positions)
+  && Array.isArray(data?.values)
+  && Array.isArray(data?.triangles)
+);
+
 const handleDepthPointPicked = (movement: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
   const cartesian = pickCartesian(movement.position);
   if (!cartesian) {
@@ -515,24 +481,36 @@ const handleDepthPointPicked = (movement: Cesium.ScreenSpaceEventHandler.Positio
     return;
   }
 
-  const gridPoint = DrawTriangleMesh.worldToFloodGrid(cartesian);
-  if (!gridPoint) {
+  const floodJson = lastLoadedFloodJson.value;
+  if (!floodJson) {
     depthPickMessage.value = '请先加载或播放洪水数据';
     stopDepthPick();
     return;
   }
 
   const cartographic = Cesium.Cartographic.fromCartesian(cartesian);
+  const lon = Cesium.Math.toDegrees(cartographic.longitude);
+  const lat = Cesium.Math.toDegrees(cartographic.latitude);
+  const gridPoint = isCachedMeshFloodData(floodJson)
+    ? { x: lon, y: lat }
+    : DrawTriangleMesh.worldToFloodGrid(cartesian);
+
+  if (!gridPoint) {
+    depthPickMessage.value = '请先加载或播放洪水数据';
+    stopDepthPick();
+    return;
+  }
+
   const sample = setFloodDepthMonitorPoint({
-    lon: Cesium.Math.toDegrees(cartographic.longitude),
-    lat: Cesium.Math.toDegrees(cartographic.latitude),
+    lon,
+    lat,
     height: cartographic.height,
     gridX: gridPoint.x,
     gridY: gridPoint.y
-  }, lastLoadedFloodJson.value);
+  }, floodJson);
 
-  if (currentFloodFrame.value > 0 && lastLoadedFloodJson.value) {
-    recordFloodPointDepth(currentFloodFrame.value, lastLoadedFloodJson.value);
+  if (currentFloodFrame.value > 0) {
+    recordFloodPointDepth(currentFloodFrame.value, floodJson);
   }
 
   depthPickMessage.value = sample.mode === 'outside'
@@ -549,7 +527,8 @@ const startDepthPick = () => {
     return;
   }
 
-  if (!lastLoadedFloodJson.value || !DrawTriangleMesh.getCurrentModelMatrix()) {
+  const floodJson = lastLoadedFloodJson.value;
+  if (!floodJson || (!isCachedMeshFloodData(floodJson) && !DrawTriangleMesh.getCurrentModelMatrix())) {
     depthPickMessage.value = '请先加载或播放一帧洪水数据';
     return;
   }
@@ -1311,60 +1290,12 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="flood-analysis-panel">
-    <div class="metric-grid">
-      <div class="metric-item current">
-        <span>当前范围</span>
-        <strong>{{ hasAreaData ? formatArea(latestAreaM2) : '--' }}</strong>
-      </div>
-      <div class="metric-item peak">
-        <span>峰值范围</span>
-        <strong>{{ hasAreaData ? formatArea(maxAreaM2) : '--' }}</strong>
-      </div>
-      <div class="metric-item">
-        <span>最小范围</span>
-        <strong>{{ hasAreaData ? formatArea(minAreaM2) : '--' }}</strong>
-      </div>
-      <div class="metric-item trend" :class="{ down: areaChangeM2 < 0 }">
-        <span>较首帧</span>
-        <strong>{{ hasAreaData ? formatSignedArea(areaChangeM2) : '--' }}</strong>
-      </div>
-    </div>
-
-    <div class="analysis-block">
-      <div class="block-heading">
-        <span>淹没范围变化曲线</span>
-        <b>{{ areaSeriesSummaryLabel }}</b>
-      </div>
-
-      <div v-if="hasAreaData" class="chart-wrap">
-        <svg class="analysis-chart" :viewBox="`0 0 ${CHART_WIDTH} ${CHART_HEIGHT}`" role="img" aria-label="淹没范围变化曲线">
-          <defs>
-            <linearGradient id="flood-area-fill" x1="0" x2="0" y1="0" y2="1">
-              <stop offset="0%" stop-color="#44e6ff" stop-opacity="0.28" />
-              <stop offset="100%" stop-color="#48d18f" stop-opacity="0.04" />
-            </linearGradient>
-          </defs>
-          <g class="grid-lines">
-            <line v-for="tick in areaYTicks" :key="tick.label" :x1="PLOT_LEFT" :x2="PLOT_RIGHT" :y1="tick.y" :y2="tick.y" />
-          </g>
-          <g class="axis-labels y-axis">
-            <text v-for="tick in areaYTicks" :key="`area-y-${tick.label}`" x="4" :y="tick.y + 4">{{ tick.label }}</text>
-          </g>
-          <polygon :points="areaFillPoints" class="area-fill" />
-          <polyline :points="areaLinePoints" class="area-line" fill="none" />
-          <circle v-for="point in areaDotPoints" :key="`area-${point.frame}-${point.x}`" :cx="point.x" :cy="point.y" r="2.4" class="area-dot" />
-          <g class="axis-labels x-axis">
-            <text v-for="tick in areaXTicks" :key="`area-x-${tick.frame}`" :x="tick.x" y="140">{{ tick.frame }}帧</text>
-          </g>
-        </svg>
-      </div>
-
-      <div v-else class="empty-state">
-        <strong>暂无淹没范围数据</strong>
-        <span>等待洪水帧数据加载</span>
-      </div>
-    </div>
-
+    <div class="analysis-group">
+      <button type="button" class="analysis-group-header" @click="toggleAnalysisGroup('depth')">
+        <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('depth') }">▶</span>
+        <span>点位水深分析</span>
+      </button>
+      <div v-show="isAnalysisGroupExpanded('depth')" class="analysis-group-content">
     <div class="analysis-block depth-block">
       <div class="block-heading">
         <span>监测点水深变化曲线</span>
@@ -1416,6 +1347,15 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
+      </div>
+    </div>
+
+    <div class="analysis-group">
+      <button type="button" class="analysis-group-header" @click="toggleAnalysisGroup('assets')">
+        <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('assets') }">▶</span>
+        <span>承灾体淹没分析</span>
+      </button>
+      <div v-show="isAnalysisGroupExpanded('assets')" class="analysis-group-content">
     <div class="analysis-block building-block">
       <div class="block-heading">
         <span>建筑物淹没分析</span>
@@ -1466,17 +1406,66 @@ onBeforeUnmount(() => {
       <p v-if="roadLayerMessage" class="point-message">{{ roadLayerMessage }}</p>
     </div>
 
-    <div class="latest-strip">
-      <span>当前帧</span>
-      <strong>{{ currentFloodFrame || '--' }}</strong>
-      <span>面积</span>
-      <strong>{{ hasAreaData ? formatArea(latestAreaM2) : '--' }}</strong>
+      </div>
+    </div>
+
+    <div class="analysis-group">
+      <button type="button" class="analysis-group-header" @click="toggleAnalysisGroup('accuracy')">
+        <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('accuracy') }">▶</span>
+        <span>精度评价</span>
+      </button>
+      <div v-show="isAnalysisGroupExpanded('accuracy')" class="analysis-group-content">
+    <AccuracyEvaluationPanel :viewer="viewer" />
+      </div>
     </div>
   </section>
 </template>
 
 <style scoped>
 .flood-analysis-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.analysis-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.analysis-group-header {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--sys-border-color-light, rgba(0, 229, 255, 0.1));
+  border-radius: 4px;
+  color: #ffffff;
+  background-color: var(--sys-bg-glow, rgba(0, 229, 255, 0.15));
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: bold;
+  text-align: left;
+  transition: all 0.3s ease;
+}
+
+.analysis-group-header:hover {
+  background-color: var(--sys-bg-glow-active, rgba(0, 229, 255, 0.3));
+}
+
+.analysis-group-arrow {
+  margin-right: 8px;
+  color: #00aeff;
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.analysis-group-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.analysis-group-content {
   display: flex;
   flex-direction: column;
   gap: 12px;

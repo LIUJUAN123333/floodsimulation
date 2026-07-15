@@ -14,8 +14,6 @@ defineProps<{
     </div>
 
     <div class="panel-content">
-      <p v-if="subtitle" class="panel-subtitle">{{ subtitle }}</p>
-
       <slot>
         <div class="placeholder-card">
           <span class="placeholder-tag">TEMPLATE</span>
@@ -98,13 +96,6 @@ defineProps<{
   flex-direction: column;
   gap: 14px;
   overflow-y: auto;
-}
-
-.panel-subtitle {
-  margin: 0;
-  color: #a0c4e0;
-  font-size: 13px;
-  line-height: 1.7;
 }
 
 .placeholder-card {

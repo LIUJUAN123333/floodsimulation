@@ -2,7 +2,14 @@
 import { computed, onUnmounted, ref } from 'vue';
 import * as Cesium from 'cesium';
 import type { Viewer } from 'cesium';
-import { floodAreaSeries } from '../store/floodState';
+import DrawTriangleMesh from '../js/DrawTriangleMesh';
+import {
+  currentFloodFrame,
+  currentShowcaseCaseId,
+  floodAreaSeries,
+  floodCellSize,
+  lastLoadedFloodJson
+} from '../store/floodState';
 
 const props = withDefaults(defineProps<{
   viewer?: Viewer | null;
@@ -10,30 +17,57 @@ const props = withDefaults(defineProps<{
   viewer: null
 });
 
+type Point2D = { x: number; y: number };
+type LonLat = { lon: number; lat: number };
+
 const EARTH_RADIUS_METERS = 6378137;
-const SIMULATION_AREA_FRAME = 284;
-const DISPLAY_FINAL_FRAME = 285;
-const OBSERVED_BOUNDARY_OFFSET_METERS = 12;
-const OVERLAP_BOUNDARY_OFFSET_METERS = 14;
+const BOUNDARY_OFFSET_METERS = 12;
+
+const fileInputRef = ref<HTMLInputElement | null>(null);
 const observedFileName = ref('');
 const observedGeoJson = ref<any>(null);
 const overlapGeoJson = ref<any>(null);
 const observedAreaM2 = ref(0);
 const overlapAreaM2 = ref(0);
+const evaluatedFrame = ref(0);
+const evaluatedSourceLabel = ref('');
+const evaluatedSimulatedAreaM2 = ref(0);
 const loading = ref(false);
 const errorMessage = ref('');
 const boundariesVisible = ref(false);
 const boundaryDataSources: Cesium.GeoJsonDataSource[] = [];
 const boundaryOutlineEntities: Cesium.Entity[] = [];
 
-const simulatedAreaM2 = computed(() => (
-  floodAreaSeries.value.find((point) => point.frame === SIMULATION_AREA_FRAME)?.areaM2 ?? 0
+const lastAreaPoint = computed(() => {
+  const series = floodAreaSeries.value
+    .filter((point) => Number.isFinite(point.frame) && Number.isFinite(point.areaM2))
+    .sort((a, b) => a.frame - b.frame);
+  return series.at(-1) ?? null;
+});
+
+const comparisonFrame = computed(() => lastAreaPoint.value?.frame ?? currentFloodFrame.value);
+const simulatedAreaM2 = computed(() => lastAreaPoint.value?.areaM2 ?? 0);
+const hasFloodData = computed(() => Boolean(lastLoadedFloodJson.value) && simulatedAreaM2.value > 0);
+const floodSourceLabel = computed(() => (
+  currentShowcaseCaseId.value ? '案例演示' : hasFloodData.value ? '仿真模拟 / 当前洪水' : '--'
 ));
-const precisionPercent = computed(() => percentage(overlapAreaM2.value, simulatedAreaM2.value));
+const comparisonFrameLabel = computed(() => (
+  evaluatedFrame.value > 0
+    ? `评价帧：第 ${evaluatedFrame.value} 帧`
+    : comparisonFrame.value > 0
+      ? `当前结果最后记录帧：第 ${comparisonFrame.value} 帧`
+      : '--'
+));
+const displayFloodSourceLabel = computed(() => evaluatedSourceLabel.value || floodSourceLabel.value);
+const displaySimulatedAreaM2 = computed(() => evaluatedSimulatedAreaM2.value || simulatedAreaM2.value);
+const precisionPercent = computed(() => percentage(overlapAreaM2.value, displaySimulatedAreaM2.value));
+const canEvaluate = computed(() => Boolean(observedGeoJson.value) && evaluatedSimulatedAreaM2.value > 0);
 
 const accuracyLevel = computed(() => {
-  if (!observedGeoJson.value) return '待评价';
-  if (!simulatedAreaM2.value) return '等待洪水数据';
+  if (loading.value) return '读取中';
+  if (errorMessage.value) return '异常';
+  if (!observedGeoJson.value) return '待上传';
+  if (!canEvaluate.value) return '待洪水';
   if (precisionPercent.value >= 90) return '高一致';
   if (precisionPercent.value >= 75) return '可接受';
   if (precisionPercent.value >= 60) return '需校核';
@@ -41,61 +75,76 @@ const accuracyLevel = computed(() => {
 });
 
 const statusText = computed(() => {
-  if (loading.value) return '正在读取灾后边界与七盘沟重叠数据';
+  if (loading.value) return '正在读取灾后真实范围 GeoJSON...';
   if (errorMessage.value) return errorMessage.value;
-  if (!observedGeoJson.value) return '请加载七盘沟灾后边界 GeoJSON';
-  if (!simulatedAreaM2.value) return '请先在仿真模拟中渲染第 284 帧 Mesh 数据';
-  return `已使用模拟最后一帧：第 ${DISPLAY_FINAL_FRAME} 帧，模拟面积取第 ${SIMULATION_AREA_FRAME} 帧 Mesh 面积`;
+  if (!observedGeoJson.value) return '请上传灾后真实淹没范围 GeoJSON 文件';
+  if (!canEvaluate.value) return '请先播放案例或加载 Mesh 洪水数据后，再重新上传灾后真实范围';
+  return `已使用${displayFloodSourceLabel.value}的最后记录帧进行评价`;
 });
 
 onUnmounted(clearBoundaryVisualization);
 
-async function loadPostDisasterData() {
+function openFilePicker() {
+  fileInputRef.value?.click();
+}
+
+async function handleObservedFileChange(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0];
+  if (!file) return;
+
   loading.value = true;
   errorMessage.value = '';
   clearBoundaryVisualization();
-  let loadedSuccessfully = false;
   try {
-    const [observedResponse, overlapResponse] = await Promise.all([
-      fetch('/precision/qipangou-zhaihou.geojson'),
-      fetch('/precision/qipangou-chongdie.geojson')
-    ]);
-    if (!observedResponse.ok) throw new Error('七盘沟灾后边界 GeoJSON 读取失败');
-    if (!overlapResponse.ok) throw new Error('七盘沟重叠范围 GeoJSON 读取失败');
-
-    const [parsedObserved, parsedOverlap] = await Promise.all([
-      observedResponse.json(),
-      overlapResponse.json()
-    ]);
-    const parsedObservedAreaM2 = calculateGeoJsonAreaM2(parsedObserved);
-    if (!Number.isFinite(parsedObservedAreaM2) || parsedObservedAreaM2 <= 0) {
-      throw new Error('七盘沟灾后边界中没有有效的 Polygon 或 MultiPolygon');
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const area = calculateGeoJsonAreaM2(parsed);
+    if (!Number.isFinite(area) || area <= 0) {
+      throw new Error('上传文件中没有有效的 Polygon 或 MultiPolygon 范围');
     }
 
-    observedGeoJson.value = parsedObserved;
-    overlapGeoJson.value = parsedOverlap;
-    observedFileName.value = 'qipangou-zhaihou.geojson';
-    observedAreaM2.value = parsedObservedAreaM2;
-    overlapAreaM2.value = calculateGeoJsonAreaM2(parsedOverlap);
-    loadedSuccessfully = true;
+    observedGeoJson.value = parsed;
+    observedFileName.value = file.name;
+    observedAreaM2.value = area;
+    updateAccuracyResult();
   } catch (error) {
     observedGeoJson.value = null;
     overlapGeoJson.value = null;
     observedFileName.value = '';
     observedAreaM2.value = 0;
     overlapAreaM2.value = 0;
+    evaluatedFrame.value = 0;
+    evaluatedSourceLabel.value = '';
+    evaluatedSimulatedAreaM2.value = 0;
     errorMessage.value = error instanceof Error ? error.message : String(error);
   } finally {
     loading.value = false;
-  }
-
-  if (loadedSuccessfully && props.viewer) {
-    await toggleBoundaryVisualization();
+    if (event.target instanceof HTMLInputElement) {
+      event.target.value = '';
+    }
   }
 }
 
+function updateAccuracyResult() {
+  if (!observedGeoJson.value || !lastLoadedFloodJson.value || !simulatedAreaM2.value) {
+    overlapAreaM2.value = 0;
+    overlapGeoJson.value = null;
+    evaluatedFrame.value = 0;
+    evaluatedSourceLabel.value = '';
+    evaluatedSimulatedAreaM2.value = 0;
+    return;
+  }
+
+  const result = calculateSimulatedOverlap(lastLoadedFloodJson.value, observedGeoJson.value);
+  overlapAreaM2.value = result.areaM2;
+  overlapGeoJson.value = result.geoJson;
+  evaluatedFrame.value = comparisonFrame.value;
+  evaluatedSourceLabel.value = floodSourceLabel.value;
+  evaluatedSimulatedAreaM2.value = simulatedAreaM2.value;
+}
+
 async function toggleBoundaryVisualization() {
-  if (!props.viewer || !observedGeoJson.value || !overlapGeoJson.value || loading.value || errorMessage.value) return;
+  if (!props.viewer || !observedGeoJson.value || loading.value || errorMessage.value) return;
   if (boundariesVisible.value) {
     clearBoundaryVisualization();
     return;
@@ -106,40 +155,60 @@ async function toggleBoundaryVisualization() {
       clampToGround: true,
       stroke: Cesium.Color.TRANSPARENT,
       strokeWidth: 0,
-      fill: Cesium.Color.fromCssColorString('#ff2d7a').withAlpha(0.28)
+      fill: Cesium.Color.fromCssColorString('#ff2d2d').withAlpha(0.3)
     });
-    const overlap = await Cesium.GeoJsonDataSource.load(overlapGeoJson.value, {
-      clampToGround: true,
-      stroke: Cesium.Color.TRANSPARENT,
-      strokeWidth: 0,
-      fill: Cesium.Color.fromCssColorString('#ffe600').withAlpha(0.44)
-    });
+    const overlap = overlapGeoJson.value
+      ? await Cesium.GeoJsonDataSource.load(overlapGeoJson.value, {
+        clampToGround: true,
+        stroke: Cesium.Color.TRANSPARENT,
+        strokeWidth: 0,
+        fill: Cesium.Color.fromCssColorString('#ffe600').withAlpha(0.48)
+      })
+      : null;
     props.viewer.dataSources.add(observed);
-    props.viewer.dataSources.add(overlap);
-    boundaryDataSources.push(observed, overlap);
+    boundaryDataSources.push(observed);
+    if (overlap) {
+      props.viewer.dataSources.add(overlap);
+      boundaryDataSources.push(overlap);
+    }
     await Promise.all([
       addRaisedBoundaryOutlines(
         observedGeoJson.value,
-        Cesium.Color.fromCssColorString('#ff2d7a'),
-        8,
-        OBSERVED_BOUNDARY_OFFSET_METERS + 1
+        Cesium.Color.fromCssColorString('#ff2d2d'),
+        7,
+        BOUNDARY_OFFSET_METERS
       ),
-      addRaisedBoundaryOutlines(
-        overlapGeoJson.value,
-        Cesium.Color.fromCssColorString('#ffe600'),
-        6,
-        OVERLAP_BOUNDARY_OFFSET_METERS + 1
-      )
+      overlapGeoJson.value
+        ? addRaisedBoundaryOutlines(
+          overlapGeoJson.value,
+          Cesium.Color.fromCssColorString('#ffe600'),
+          5,
+          BOUNDARY_OFFSET_METERS + 2
+        )
+        : Promise.resolve()
     ]);
     boundariesVisible.value = true;
     await props.viewer.flyTo(
-      [...observed.entities.values, ...overlap.entities.values],
+      overlap ? [...observed.entities.values, ...overlap.entities.values] : observed.entities.values,
       { duration: 1.2 }
     );
   } catch (error) {
     clearBoundaryVisualization();
     errorMessage.value = error instanceof Error ? error.message : String(error);
   }
+}
+
+function clearAccuracyData() {
+  clearBoundaryVisualization();
+  observedGeoJson.value = null;
+  overlapGeoJson.value = null;
+  observedFileName.value = '';
+  observedAreaM2.value = 0;
+  overlapAreaM2.value = 0;
+  evaluatedFrame.value = 0;
+  evaluatedSourceLabel.value = '';
+  evaluatedSimulatedAreaM2.value = 0;
+  errorMessage.value = '';
 }
 
 async function addRaisedBoundaryOutlines(
@@ -187,30 +256,6 @@ async function addRaisedBoundaryOutlines(
   }
 }
 
-function extractOuterRings(geoJson: any): Array<Array<[number, number]>> {
-  const rings: Array<Array<[number, number]>> = [];
-  const addRing = (coordinates: any) => {
-    const ring = (Array.isArray(coordinates) ? coordinates : [])
-      .map((coordinate) => [Number(coordinate?.[0]), Number(coordinate?.[1])] as [number, number])
-      .filter(([lon, lat]) => Number.isFinite(lon) && Number.isFinite(lat));
-    if (ring.length >= 3) rings.push(ring);
-  };
-  const visitGeometry = (geometry: any) => {
-    if (geometry?.type === 'Polygon') addRing(geometry.coordinates?.[0]);
-    if (geometry?.type === 'MultiPolygon') {
-      geometry.coordinates?.forEach((polygon: any) => addRing(polygon?.[0]));
-    }
-    if (geometry?.type === 'GeometryCollection') {
-      geometry.geometries?.forEach(visitGeometry);
-    }
-  };
-
-  if (geoJson?.type === 'FeatureCollection') geoJson.features?.forEach((feature: any) => visitGeometry(feature.geometry));
-  else if (geoJson?.type === 'Feature') visitGeometry(geoJson.geometry);
-  else visitGeometry(geoJson);
-  return rings;
-}
-
 function clearBoundaryVisualization() {
   if (props.viewer) {
     boundaryDataSources.splice(0).forEach((dataSource) => {
@@ -226,6 +271,102 @@ function clearBoundaryVisualization() {
     boundaryOutlineEntities.length = 0;
   }
   boundariesVisible.value = false;
+}
+
+function getSimulationVertices(floodData: any): LonLat[] {
+  if (Array.isArray(floodData?.positions)) {
+    const vertices: LonLat[] = [];
+    for (let index = 0; index + 1 < floodData.positions.length; index += 2) {
+      const lon = Number(floodData.positions[index]);
+      const lat = Number(floodData.positions[index + 1]);
+      if (Number.isFinite(lon) && Number.isFinite(lat)) vertices.push({ lon, lat });
+    }
+    return vertices;
+  }
+
+  if (!Array.isArray(floodData?.Vector)) return [];
+  const modelMatrix = DrawTriangleMesh.getCurrentModelMatrix();
+  const cellSize = floodCellSize.value || 1;
+  if (!modelMatrix) return [];
+
+  const vertices: LonLat[] = [];
+  for (let index = 0; index + 2 < floodData.Vector.length; index += 3) {
+    const local = new Cesium.Cartesian3(
+      Number(floodData.Vector[index]) * cellSize,
+      Number(floodData.Vector[index + 1]) * cellSize,
+      Number(floodData.Vector[index + 2]) || 0
+    );
+    if (![local.x, local.y, local.z].every(Number.isFinite)) continue;
+
+    const world = Cesium.Matrix4.multiplyByPoint(modelMatrix, local, new Cesium.Cartesian3());
+    const cartographic = Cesium.Cartographic.fromCartesian(world);
+    vertices.push({
+      lon: Cesium.Math.toDegrees(cartographic.longitude),
+      lat: Cesium.Math.toDegrees(cartographic.latitude)
+    });
+  }
+  return vertices;
+}
+
+function getSimulationTriangles(floodData: any): number[] {
+  const source = Array.isArray(floodData?.triangles) ? floodData.triangles : floodData?.Face;
+  return Array.isArray(source)
+    ? source.map((item: unknown) => Number(item)).filter(Number.isFinite)
+    : [];
+}
+
+function calculateSimulatedOverlap(floodData: any, observed: any) {
+  const vertices = getSimulationVertices(floodData);
+  const triangles = getSimulationTriangles(floodData);
+  if (!vertices.length || !triangles.length) {
+    return { areaM2: 0, geoJson: null };
+  }
+
+  const referenceLat = getReferenceLatitude([...vertices, ...extractOuterRings(observed).flat().map(([lon, lat]) => ({ lon, lat }))]);
+  const project = (point: LonLat): Point2D => ({
+    x: Cesium.Math.toRadians(point.lon) * EARTH_RADIUS_METERS * Math.cos(Cesium.Math.toRadians(referenceLat)),
+    y: Cesium.Math.toRadians(point.lat) * EARTH_RADIUS_METERS
+  });
+
+  let overlapArea = 0;
+  const features: any[] = [];
+  for (let index = 0; index + 2 < triangles.length; index += 3) {
+    const a = vertices[triangles[index]];
+    const b = vertices[triangles[index + 1]];
+    const c = vertices[triangles[index + 2]];
+    if (!a || !b || !c) continue;
+
+    const centroid = {
+      lon: (a.lon + b.lon + c.lon) / 3,
+      lat: (a.lat + b.lat + c.lat) / 3
+    };
+    if (!isPointInGeoJson(centroid, observed)) continue;
+
+    overlapArea += triangleAreaM2(project(a), project(b), project(c));
+    features.push({
+      type: 'Feature',
+      properties: { kind: 'overlap' },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [[
+          [a.lon, a.lat],
+          [b.lon, b.lat],
+          [c.lon, c.lat],
+          [a.lon, a.lat]
+        ]]
+      }
+    });
+  }
+
+  return {
+    areaM2: Math.min(overlapArea, simulatedAreaM2.value, observedAreaM2.value),
+    geoJson: features.length
+      ? {
+        type: 'FeatureCollection',
+        features
+      }
+      : null
+  };
 }
 
 function calculateGeoJsonAreaM2(geoJson: any) {
@@ -264,12 +405,10 @@ function calculatePolygonAreaM2(rings: any[]) {
 }
 
 function calculateRingAreaM2(coordinates: any[]) {
-  const points = (Array.isArray(coordinates) ? coordinates : [])
-    .map((coordinate) => ({ lon: Number(coordinate?.[0]), lat: Number(coordinate?.[1]) }))
-    .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat));
+  const points = parseRing(coordinates);
   if (points.length < 3) return 0;
 
-  const referenceLat = points.reduce((sum, point) => sum + point.lat, 0) / points.length;
+  const referenceLat = getReferenceLatitude(points);
   const xScale = EARTH_RADIUS_METERS * Math.cos(Cesium.Math.toRadians(referenceLat));
   let signedArea = 0;
   for (let index = 0; index < points.length; index += 1) {
@@ -284,6 +423,84 @@ function calculateRingAreaM2(coordinates: any[]) {
   return Math.abs(signedArea) / 2;
 }
 
+function extractOuterRings(geoJson: any): Array<Array<[number, number]>> {
+  const rings: Array<Array<[number, number]>> = [];
+  const addRing = (coordinates: any) => {
+    const ring = parseRing(coordinates).map((point) => [point.lon, point.lat] as [number, number]);
+    if (ring.length >= 3) rings.push(ring);
+  };
+  const visitGeometry = (geometry: any) => {
+    if (geometry?.type === 'Polygon') addRing(geometry.coordinates?.[0]);
+    if (geometry?.type === 'MultiPolygon') {
+      geometry.coordinates?.forEach((polygon: any) => addRing(polygon?.[0]));
+    }
+    if (geometry?.type === 'GeometryCollection') {
+      geometry.geometries?.forEach(visitGeometry);
+    }
+  };
+
+  if (geoJson?.type === 'FeatureCollection') geoJson.features?.forEach((feature: any) => visitGeometry(feature.geometry));
+  else if (geoJson?.type === 'Feature') visitGeometry(geoJson.geometry);
+  else visitGeometry(geoJson);
+  return rings;
+}
+
+function parseRing(coordinates: any[]) {
+  return (Array.isArray(coordinates) ? coordinates : [])
+    .map((coordinate) => ({ lon: Number(coordinate?.[0]), lat: Number(coordinate?.[1]) }))
+    .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat));
+}
+
+function isPointInGeoJson(point: LonLat, geoJson: any): boolean {
+  const visitGeometry = (geometry: any): boolean => {
+    if (!geometry) return false;
+    if (geometry.type === 'Polygon') return isPointInPolygon(point, geometry.coordinates);
+    if (geometry.type === 'MultiPolygon') {
+      return (geometry.coordinates || []).some((polygon: any) => isPointInPolygon(point, polygon));
+    }
+    if (geometry.type === 'GeometryCollection') {
+      return (geometry.geometries || []).some(visitGeometry);
+    }
+    return false;
+  };
+
+  if (geoJson?.type === 'FeatureCollection') {
+    return (geoJson.features || []).some((feature: any) => visitGeometry(feature.geometry));
+  }
+  if (geoJson?.type === 'Feature') return visitGeometry(geoJson.geometry);
+  return visitGeometry(geoJson);
+}
+
+function isPointInPolygon(point: LonLat, rings: any[]) {
+  if (!Array.isArray(rings) || !rings.length) return false;
+  const outer = isPointInRing(point, parseRing(rings[0]));
+  const inHole = rings.slice(1).some((ring) => isPointInRing(point, parseRing(ring)));
+  return outer && !inHole;
+}
+
+function isPointInRing(point: LonLat, ring: LonLat[]) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    const xi = ring[i].lon;
+    const yi = ring[i].lat;
+    const xj = ring[j].lon;
+    const yj = ring[j].lat;
+    const intersect = ((yi > point.lat) !== (yj > point.lat))
+      && (point.lon < ((xj - xi) * (point.lat - yi)) / ((yj - yi) || 1e-12) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function getReferenceLatitude(points: LonLat[]) {
+  if (!points.length) return 0;
+  return points.reduce((sum, point) => sum + point.lat, 0) / points.length;
+}
+
+function triangleAreaM2(a: Point2D, b: Point2D, c: Point2D) {
+  return Math.abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) / 2;
+}
+
 function percentage(numerator: number, denominator: number) {
   if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) return 0;
   return Math.min(100, Math.max(0, numerator / denominator * 100));
@@ -291,7 +508,7 @@ function percentage(numerator: number, denominator: number) {
 
 function formatArea(areaM2: number) {
   if (!Number.isFinite(areaM2) || areaM2 <= 0) return '--';
-  return `${(areaM2 / 1_000_000).toFixed(3)} km²`;
+  return `${Number((areaM2 / 1_000_000).toFixed(3))} km²`;
 }
 </script>
 
@@ -300,36 +517,47 @@ function formatArea(areaM2: number) {
     <div class="accuracy-heading">
       <div>
         <span class="section-tag">ACCURACY</span>
-        <h3>七盘沟精度对比</h3>
+        <h3>精度评价</h3>
       </div>
       <span class="status-pill">{{ accuracyLevel }}</span>
     </div>
 
-    <button class="load-boundary-btn" type="button" :disabled="loading" @click="loadPostDisasterData">
-      {{ loading ? '正在加载边界...' : '加载灾后边界数据' }}
+    <input
+      ref="fileInputRef"
+      class="hidden-file-input"
+      type="file"
+      hidden
+      tabindex="-1"
+      accept=".geojson,.json,application/geo+json,application/json"
+      @change="handleObservedFileChange"
+    />
+
+    <button class="load-boundary-btn" type="button" :disabled="loading" @click="openFilePicker">
+      {{ loading ? '正在读取...' : '上传灾后真实范围 GeoJSON' }}
     </button>
 
     <p class="accuracy-status" :class="{ error: errorMessage }">{{ statusText }}</p>
 
-    <div class="formula-box">匹配精度 = S重叠 / S模拟 × 100%</div>
+    <div class="formula-box">匹配精度 = 重叠面积 / 模拟淹没面积 × 100%</div>
 
     <div class="accuracy-grid">
-      <div><span>模拟区域</span><strong>七盘沟</strong></div>
-      <div><span>模拟最后一帧</span><strong>第 {{ DISPLAY_FINAL_FRAME }} 帧</strong></div>
+      <div><span>洪水来源</span><strong>{{ displayFloodSourceLabel }}</strong></div>
+      <div><span>对比帧</span><strong>{{ comparisonFrameLabel }}</strong></div>
       <div><span>灾后真实面积</span><strong>{{ formatArea(observedAreaM2) }}</strong></div>
-      <div><span>Mesh 模拟面积</span><strong>{{ formatArea(simulatedAreaM2) }}</strong></div>
-      <div><span>重叠区域面积</span><strong>{{ formatArea(overlapAreaM2) }}</strong></div>
-      <div><span>匹配精度</span><strong class="highlight">{{ observedGeoJson && simulatedAreaM2 ? precisionPercent.toFixed(1) + '%' : '--' }}</strong></div>
+      <div><span>模拟淹没面积</span><strong>{{ formatArea(displaySimulatedAreaM2) }}</strong></div>
+      <div><span>重叠区域面积</span><strong>{{ canEvaluate ? formatArea(overlapAreaM2) : '--' }}</strong></div>
+      <div><span>匹配精度</span><strong class="highlight">{{ canEvaluate ? precisionPercent.toFixed(1) + '%' : '--' }}</strong></div>
     </div>
 
-    <div class="accuracy-meter" aria-label="七盘沟匹配精度">
-      <div :style="{ width: `${precisionPercent}%` }"></div>
+    <div class="accuracy-meter" aria-label="匹配精度">
+      <div :style="{ width: `${canEvaluate ? precisionPercent : 0}%` }"></div>
     </div>
 
     <div class="accuracy-footer">
       <button type="button" :disabled="!viewer || !observedGeoJson || loading || !!errorMessage" @click="toggleBoundaryVisualization">
         {{ boundariesVisible ? '隐藏范围' : '显示范围' }}
       </button>
+      <button type="button" :disabled="!observedGeoJson && !errorMessage" @click="clearAccuracyData">清除结果</button>
     </div>
 
     <div class="boundary-legend">
@@ -383,9 +611,13 @@ h3 {
   white-space: nowrap;
 }
 
+.hidden-file-input {
+  display: none !important;
+}
+
 .load-boundary-btn {
   width: 100%;
-  min-height: 32px;
+  min-height: 34px;
   border: 1px solid rgba(0, 229, 255, 0.28);
   border-radius: 4px;
   color: #a6f2ff;
@@ -522,8 +754,8 @@ h3 {
 }
 
 .boundary-legend .observed {
-  border: 1px solid #ff2d7a;
-  background: rgba(255, 45, 122, 0.3);
+  border: 1px solid #ff2d2d;
+  background: rgba(255, 45, 45, 0.34);
 }
 
 .boundary-legend .overlap {

@@ -116,7 +116,12 @@ export const resetFloodAreaSeries = () => {
 
 const getDepthArray = (jsonData: any): number[] | null => {
   const depth = jsonData?.Depth?.[0];
-  return Array.isArray(depth) ? depth : null;
+  if (Array.isArray(depth)) {
+    return depth;
+  }
+
+  const values = jsonData?.values;
+  return Array.isArray(values) ? values : null;
 };
 
 const getVectorArray = (jsonData: any): number[] | null => {
@@ -124,9 +129,41 @@ const getVectorArray = (jsonData: any): number[] | null => {
   return Array.isArray(vector) ? vector : null;
 };
 
+const getPositionArray = (jsonData: any): number[] | null => {
+  const positions = jsonData?.positions;
+  return Array.isArray(positions) ? positions : null;
+};
+
 const getFaceArray = (jsonData: any): number[] | null => {
   const face = jsonData?.Face;
-  return Array.isArray(face) ? face : null;
+  if (Array.isArray(face)) {
+    return face;
+  }
+
+  const triangles = jsonData?.triangles;
+  return Array.isArray(triangles) ? triangles : null;
+};
+
+const getVertexXY = (jsonData: any, vertexIndex: number) => {
+  const vector = getVectorArray(jsonData);
+  if (vector) {
+    const idx = vertexIndex * 3;
+    return {
+      x: Number(vector[idx]),
+      y: Number(vector[idx + 1])
+    };
+  }
+
+  const positions = getPositionArray(jsonData);
+  if (positions) {
+    const idx = vertexIndex * 2;
+    return {
+      x: Number(positions[idx]),
+      y: Number(positions[idx + 1])
+    };
+  }
+
+  return null;
 };
 
 const getBarycentricDepth = (
@@ -134,11 +171,10 @@ const getBarycentricDepth = (
   gridX: number,
   gridY: number
 ): FloodDepthSampleResult | null => {
-  const vertices = getVectorArray(jsonData);
   const faces = getFaceArray(jsonData);
   const depths = getDepthArray(jsonData);
 
-  if (!vertices || !faces || !depths) {
+  if (!faces || !depths) {
     return null;
   }
 
@@ -147,16 +183,17 @@ const getBarycentricDepth = (
     const vertexIndex0 = faces[i];
     const vertexIndex1 = faces[i + 1];
     const vertexIndex2 = faces[i + 2];
-    const idx0 = vertexIndex0 * 3;
-    const idx1 = vertexIndex1 * 3;
-    const idx2 = vertexIndex2 * 3;
+    const vertex0 = getVertexXY(jsonData, vertexIndex0);
+    const vertex1 = getVertexXY(jsonData, vertexIndex1);
+    const vertex2 = getVertexXY(jsonData, vertexIndex2);
 
-    const x0 = Number(vertices[idx0]);
-    const y0 = Number(vertices[idx0 + 1]);
-    const x1 = Number(vertices[idx1]);
-    const y1 = Number(vertices[idx1 + 1]);
-    const x2 = Number(vertices[idx2]);
-    const y2 = Number(vertices[idx2 + 1]);
+    if (!vertex0 || !vertex1 || !vertex2) {
+      continue;
+    }
+
+    const { x: x0, y: y0 } = vertex0;
+    const { x: x1, y: y1 } = vertex1;
+    const { x: x2, y: y2 } = vertex2;
 
     if (![x0, y0, x1, y1, x2, y2].every(Number.isFinite)) {
       continue;
@@ -194,19 +231,21 @@ const getNearestDepth = (
   gridX: number,
   gridY: number
 ): FloodDepthSampleResult | null => {
-  const vertices = getVectorArray(jsonData);
   const depths = getDepthArray(jsonData);
 
-  if (!vertices || !depths) {
+  if (!depths) {
     return null;
   }
 
   let nearestIndex = -1;
   let nearestDistanceSq = Number.POSITIVE_INFINITY;
   for (let i = 0; i < depths.length; i += 1) {
-    const idx = i * 3;
-    const x = Number(vertices[idx]);
-    const y = Number(vertices[idx + 1]);
+    const vertex = getVertexXY(jsonData, i);
+    if (!vertex) {
+      continue;
+    }
+
+    const { x, y } = vertex;
     if (!Number.isFinite(x) || !Number.isFinite(y)) {
       continue;
     }
@@ -220,7 +259,8 @@ const getNearestDepth = (
     }
   }
 
-  if (nearestIndex < 0 || nearestDistanceSq > 2.25) {
+  const maxNearestDistanceSq = getPositionArray(jsonData) ? 1e-6 : 2.25;
+  if (nearestIndex < 0 || nearestDistanceSq > maxNearestDistanceSq) {
     return null;
   }
 

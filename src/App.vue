@@ -6,7 +6,7 @@ import CesiumViewer from './components/CesiumViewer.vue';
 import BasicFunctionsPanel from './components/BasicFunctionsPanel.vue';
 import DataProcessingPanel from './components/DataProcessingPanel.vue';
 import FloodAnalysisPanel from './components/FloodAnalysisPanel.vue';
-import FloodAreaCalculator from './components/FloodAreaCalculator.vue';
+import FloodAreaFloatingPanel from './components/FloodAreaFloatingPanel.vue';
 import FloodLoader from './components/FloodLoader.vue';
 import HelpPanel from './components/HelpPanel.vue';
 import MonitoringPanel from './components/MonitoringPanel.vue';
@@ -50,23 +50,13 @@ const isMapReady = ref(false);
 const showUI = ref(false);
 const showV0226CPanels = ref(false); // 新增：控制原V0226C面板的显示
 const simulationPanelMounted = ref(false);
-const systemTitle = '暴雨洪涝动态模拟与三维可视化系统';
+const systemTitle = '洪水动态模拟与三维可视化系统';
 
 // ----------------- TopBar 面板控制 -----------------
 const panelVisible = ref(false);
 const panelTitle = ref('');
 const panelSubtitle = ref('');
 const activePanelId = ref<string>('');
-
-const panelContents: Record<string, string> = {
-  intro: '系统介绍与项目背景',
-  simulation: '仿真参数与运行控制',
-  analysis: '灾情统计与分析视图',
-  demo: '案例演示与回放',
-  monitor: '实时数据监测与告警',
-  basic: '基础能力与通用工具',
-  help: '使用说明与常见问题'
-};
 
 let hideTimeout: number | undefined;
 
@@ -96,7 +86,7 @@ const openPanel = (payload: { id: string; title: string }) => {
 
   activePanelId.value = payload.id;
   panelTitle.value = payload.title;
-  panelSubtitle.value = panelContents[payload.id] ?? '';
+  panelSubtitle.value = '';
   
   if (payload.id === 'simulation') {
     simulationPanelMounted.value = true;
@@ -246,7 +236,7 @@ const onRiverRunoffRainstormChange = (active: boolean) => {
   runoffRainstormActive.value = active;
 };
 
-type GalleryShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
+type GalleryShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao';
 
 const onShowcase = (caseId: GalleryShowcaseCaseId) => {
   if (!floodLoaderRef.value) {
@@ -318,6 +308,7 @@ const onFlyComplete = () => { showUI.value = true; };
     
     <CesiumViewer ref="cesiumViewerRef" @viewer-ready="onViewerReady" @fly-complete="onFlyComplete" @terrain-error="handleTerrainError" />
     <FloodLoader v-if="viewer" ref="floodLoaderRef" class="showcase-flood-loader" :viewer="viewer" />
+    <FloodAreaFloatingPanel v-if="showUI" />
     <RainstormEffect v-if="viewer" :viewer="viewer" :active="effectiveRainstormEnabled" />
     <RiverRunoffEffect
       v-if="viewer"
@@ -378,13 +369,6 @@ const onFlyComplete = () => { showUI.value = true; };
             <span class="switch-text">{{ terrainSwitching ? '切换中' : '地形层' }}</span>
           </label>
         </div>
-      </div>
-    </transition>
-
-    <!-- 只保留洪水结果小窗口 -->
-    <transition name="fade-left">
-      <div v-show="showUI && showV0226CPanels" class="v0226c-panels">
-        <FloodAreaCalculator />
       </div>
     </transition>
 
@@ -626,17 +610,6 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
   top: 0;
   left: 60px;
   transform: none;
-}
-
-.monitor-panel-shell {
-  bottom: 140px;
-  max-height: none;
-  overflow: hidden;
-}
-
-.monitor-panel-shell .panel-content {
-  min-height: 0;
-  overflow-y: auto;
 }
 
 .info-panel-shell {
