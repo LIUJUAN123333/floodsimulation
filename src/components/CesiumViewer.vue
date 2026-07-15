@@ -28,10 +28,9 @@ let roamCurrentHeight = 120;
 let isRoamPaused = false;
 const measurementEntities: Cesium.Entity[] = [];
 const roamEntities: Cesium.Entity[] = [];
-const emit = defineEmits(['viewer-ready', 'fly-complete', 'terrain-error']);
+const emit = defineEmits(['viewer-ready', 'fly-complete', 'terrain-error', 'coordinates-change']);
 
 const mousePosition = ref({ lon: '0.000000', lat: '0.000000', height: '0.00' });
-const showCoordinates = ref(false);
 
 const configureCameraControls = (viewerInstance: Viewer) => {
   const controller = viewerInstance.scene.screenSpaceCameraController;
@@ -63,6 +62,7 @@ onMounted(async () => {
       selectionIndicator: false,
       sceneModePicker: false,
       navigationHelpButton: false,
+      fullscreenButton: false,
       creditContainer: document.createElement('div'),
       contextOptions: {
         webgl: {
@@ -99,9 +99,7 @@ onMounted(async () => {
           mousePosition.value.lat = CesiumMath.toDegrees(cartographic.latitude).toFixed(6);
           const height = viewer.scene.globe.getHeight(cartographic) || cartographic.height;
           mousePosition.value.height = height.toFixed(2);
-          showCoordinates.value = true;
-        } else {
-          showCoordinates.value = false;
+          emit('coordinates-change', { ...mousePosition.value });
         }
       }
     }, ScreenSpaceEventType.MOUSE_MOVE);
@@ -239,7 +237,7 @@ const addMeasurePoint = (position: Cesium.Cartesian3, text?: string) => {
 };
 
 const fullScreen = () => {
-  const element = viewer?.container;
+  const element = (cesiumContainer.value?.closest('.main-container') as HTMLElement | null) ?? viewer?.container;
   if (!element) return;
   if (document.fullscreenElement) {
     document.exitFullscreen?.();
@@ -483,19 +481,6 @@ defineExpose({
 <template>
   <div class="viewer-wrapper">
     <div ref="cesiumContainer" class="cesium-container"></div>
-    
-    <div class="coordinates-panel" aria-hidden="false">
-      <div class="coords-row">
-        <span class="coord-label">海拔:</span>
-        <span class="coord-value">{{ mousePosition.height }} 米</span>
-        <span class="coord-gap"></span>
-        <span class="coord-label">经度:</span>
-        <span class="coord-value">{{ mousePosition.lon }}</span>
-        <span class="coord-gap"></span>
-        <span class="coord-label">纬度:</span>
-        <span class="coord-value">{{ mousePosition.lat }}</span>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -509,85 +494,5 @@ defineExpose({
 .cesium-container {
   width: 100%;
   height: 100%;
-}
-
-.coordinates-panel {
-  position: absolute;
-  bottom: 10px;
-  right: 220px; /* 向左移动以避免遮挡 Logo；如需微调可改为 200px/240px 等 */
-  background: transparent;
-  border-radius: 4px;
-  padding: 6px 10px;
-  display: flex;
-  align-items: center;
-  z-index: 9998; /* 低于 logo 的 9999，确保不被遮挡 */
-  pointer-events: none;
-  font-family: "Microsoft YaHei", sans-serif;
-}
-
-.coords-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  padding: 6px 10px;
-}
-
-.coord-label {
-  color: rgba(255, 255, 255, 0.95);
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.coord-value {
-  color: #00e5ff;
-  font-size: 13px;
-  font-weight: 700;
-  font-family: "Courier New", Courier, monospace;
-}
-
-.coord-gap {
-  width: 8px;
-}
-
-@media (max-width: 1200px) {
-  .coordinates-panel {
-    right: 140px; /* 窄屏时减小预留，避免超出可视范围 */
-  }
-}
-
-@media (max-width: 760px) {
-  .coordinates-panel {
-    right: 90px; /* 手机或小屏幕进一步调整 */
-  }
-}
-
-.coord-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.coord-label {
-  color: #89a8bf;
-  font-size: 12px;
-}
-
-.coord-value {
-  color: #00e5ff;
-  font-size: 13px;
-  font-weight: 600;
-  font-family: "Courier New", Courier, monospace;
-}
-
-.fade-coords-enter-active,
-.fade-coords-leave-active {
-  transition: opacity 0.3s ease;
-}
-.fade-coords-enter-from,
-.fade-coords-leave-to {
-  opacity: 0;
 }
 </style>

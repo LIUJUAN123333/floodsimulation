@@ -51,7 +51,7 @@ defineProps<{
   position: absolute;
   top: 90px;
   width: 320px;
-  max-height: calc(100vh - 120px);
+  max-height: calc(100vh - 102px - var(--system-bottom-safe-space, 90px));
   background: var(--sys-glass-bg);
   /* backdrop-filter: blur(10px); 去除高斯模糊以解决渲染卡顿 */
   border: 1px solid var(--sys-border-color);
@@ -194,7 +194,7 @@ defineProps<{
 @media (max-width: 980px) {
   .panel-container {
     top: auto;
-    bottom: 70px;
+    bottom: var(--system-bottom-safe-space, 90px);
     max-height: 42vh;
   }
 

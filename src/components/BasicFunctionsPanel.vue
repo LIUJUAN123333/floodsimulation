@@ -62,12 +62,6 @@ const handleClearMeasurements = () => {
   basicStatus.value = '已清除量测标绘。';
 };
 
-const handleClearView = async () => {
-  activeBasicFlyout.value = null;
-  await props.cesiumViewerRef?.clearView?.();
-  basicStatus.value = '已清除基础工具生成的标绘和叠加图层。';
-};
-
 const handlePickRoamPath = () => {
   props.cesiumViewerRef?.startPickRoamPath?.();
   roamPaused.value = false;
@@ -101,29 +95,29 @@ const handleClearRoam = () => {
 
 <template>
   <div class="basic-icon-dock">
-    <button class="basic-icon-btn" title="HOME" aria-label="HOME" @click="handleFlyHome">
+    <button type="button" data-label="HOME" class="basic-icon-btn" title="HOME" aria-label="HOME" @click="handleFlyHome">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M4 11L12 4L20 11V20H15V14H9V20H4V11Z" /></svg>
     </button>
-    <button class="basic-icon-btn" :class="{ active: activeBasicFlyout === 'fly' }" title="定位飞行" aria-label="定位飞行" @click="toggleBasicFlyout('fly')">
+    <button type="button" data-label="定位" class="basic-icon-btn" :class="{ active: activeBasicFlyout === 'fly' }" title="定位飞行" aria-label="定位飞行" @click="toggleBasicFlyout('fly')">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M12 3L15 10L22 12L15 14L12 21L9 14L2 12L9 10L12 3Z" /></svg>
     </button>
-    <button class="basic-icon-btn" :class="{ active: activeBasicFlyout === 'measure' }" title="量测标绘" aria-label="量测标绘" @click="toggleBasicFlyout('measure')">
+    <button type="button" data-label="量测" class="basic-icon-btn" :class="{ active: activeBasicFlyout === 'measure' }" title="量测标绘" aria-label="量测标绘" @click="toggleBasicFlyout('measure')">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M4 17L17 4L20 7L7 20H4V17ZM14 7L17 10M11 10L13 12M8 13L10 15" /></svg>
     </button>
-    <button class="basic-icon-btn" :class="{ active: activeBasicFlyout === 'roam' }" title="漫游" aria-label="漫游" @click="toggleBasicFlyout('roam')">
+    <button type="button" data-label="漫游" class="basic-icon-btn" :class="{ active: activeBasicFlyout === 'roam' }" title="漫游" aria-label="漫游" @click="toggleBasicFlyout('roam')">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M5 18C9 18 7 6 12 6C17 6 15 18 19 18M5 18L3 16M5 18L3 20M19 18L21 16M19 18L21 20" /></svg>
     </button>
-    <button class="basic-icon-btn" title="全屏" aria-label="全屏" @click="handleFullScreen">
+    <button type="button" data-label="全屏" class="basic-icon-btn" title="全屏" aria-label="全屏" @click="handleFullScreen">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M4 9V4H9M15 4H20V9M20 15V20H15M9 20H4V15" /></svg>
     </button>
-    <button class="basic-icon-btn" title="截图" aria-label="截图" @click="handleCaptureScreen">
+    <button type="button" data-label="截图" class="basic-icon-btn" title="截图" aria-label="截图" @click="handleCaptureScreen">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M4 8H8L10 5H14L16 8H20V19H4V8ZM12 17A4 4 0 1 0 12 9A4 4 0 0 0 12 17Z" /></svg>
     </button>
-    <button class="basic-icon-btn danger" title="清除" aria-label="清除" @click="handleClearView">
-      <svg viewBox="0 0 24 24" aria-hidden><path d="M5 7H19M9 7V5H15V7M8 10V20H16V10" /></svg>
-    </button>
-
-    <div v-if="activeBasicFlyout" class="basic-tool-flyout">
+    <div
+      v-if="activeBasicFlyout"
+      class="basic-tool-flyout"
+      :class="`flyout-${activeBasicFlyout}`"
+    >
       <template v-if="activeBasicFlyout === 'fly'">
         <div class="flyout-title">定位飞行</div>
         <div class="tool-input-grid">
@@ -161,102 +155,197 @@ const handleClearRoam = () => {
 
 <style scoped>
 .basic-icon-dock {
-  position: absolute;
-  top: 112px;
-  right: 24px;
-  z-index: 10020;
+  position: relative;
+  z-index: 2;
   display: flex;
-  flex-direction: column;
-  gap: 9px;
+  min-width: 0;
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
   pointer-events: auto;
 }
 
 .basic-icon-btn {
-  width: 42px;
-  height: 42px;
+  position: relative;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   padding: 0;
-  border: 1px solid rgba(0, 167, 197, 0.44);
-  border-radius: 4px;
-  background: linear-gradient(180deg, rgba(0, 104, 124, 0.62), rgba(0, 45, 68, 0.64));
-  color: #dffbff;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #9fb4bf;
   cursor: pointer;
-  box-shadow: inset 0 0 14px rgba(0, 229, 255, 0.16), 0 8px 18px rgba(0, 0, 0, 0.26);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  box-shadow: none;
+  transition: border-color 0.18s ease, background-color 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.basic-icon-btn::before {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  content: attr(data-label);
+  min-width: max-content;
+  padding: 3px 7px;
+  border: 1px solid rgba(0, 229, 255, 0.24);
+  border-radius: 4px;
+  background: rgba(6, 18, 32, 0.94);
+  color: #dffbff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.22);
+  opacity: 0;
+  transform: translate(-50%, 4px);
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  pointer-events: none;
+}
+
+.basic-icon-btn::after {
+  position: absolute;
+  left: 9px;
+  right: 9px;
+  bottom: 2px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.84), transparent);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  content: '';
 }
 
 .basic-icon-btn svg {
-  width: 22px;
-  height: 22px;
+  position: relative;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  filter: drop-shadow(0 0 5px rgba(95, 223, 237, 0.06));
 }
 
 .basic-icon-btn path {
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.9;
+  stroke-width: 1.85;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 .basic-icon-btn:hover,
 .basic-icon-btn.active {
-  border-color: rgba(0, 229, 255, 0.88);
-  background: linear-gradient(180deg, rgba(0, 151, 185, 0.78), rgba(0, 74, 98, 0.82));
-  color: #ffffff;
-  box-shadow: inset 0 0 18px rgba(0, 229, 255, 0.24), 0 0 16px rgba(0, 229, 255, 0.28);
+  border-color: rgba(0, 229, 255, 0.26);
+  background: rgba(0, 229, 255, 0.055);
+  color: #e8feff;
+  box-shadow: inset 0 0 10px rgba(0, 229, 255, 0.055);
+  transform: translateY(-1px);
 }
 
-.basic-icon-btn.danger:hover {
-  border-color: rgba(255, 82, 82, 0.9);
-  background: linear-gradient(180deg, rgba(147, 35, 45, 0.78), rgba(77, 16, 28, 0.86));
-  box-shadow: inset 0 0 16px rgba(255, 82, 82, 0.22), 0 0 14px rgba(255, 82, 82, 0.22);
+.basic-icon-btn:hover::before,
+.basic-icon-btn:focus-visible::before {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+.basic-icon-btn:hover::after,
+.basic-icon-btn.active::after {
+  opacity: 1;
+}
+
+.basic-icon-btn.active {
+  color: #ffffff;
+  border-color: rgba(0, 229, 255, 0.42);
+}
+
+.basic-icon-btn:focus-visible {
+  outline: 2px solid #7de9f7;
+  outline-offset: 2px;
 }
 
 .basic-tool-flyout {
   position: absolute;
-  top: 0;
-  right: 54px;
-  width: 230px;
+  top: auto;
+  bottom: calc(100% + 14px);
+  left: var(--flyout-offset, 0);
+  right: auto;
+  width: min(240px, calc(100vw - 24px));
+  overflow: visible;
   display: flex;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
-  border: 1px solid rgba(0, 196, 230, 0.34);
-  border-radius: 4px;
-  background:
-    radial-gradient(circle at 0% 18%, rgba(0, 214, 255, 0.16), transparent 42%),
-    linear-gradient(180deg, rgba(4, 20, 38, 0.94), rgba(3, 13, 28, 0.9));
-  box-shadow: inset 0 0 20px rgba(0, 229, 255, 0.1), 0 12px 30px rgba(0, 0, 0, 0.45);
+  padding: 11px;
+  border: 1px solid var(--sys-border-color);
+  border-radius: 6px;
+  background: var(--sys-glass-bg);
+  box-shadow: inset 0 0 16px var(--sys-border-color-light), 0 8px 24px rgba(0, 0, 0, 0.34);
+  backdrop-filter: blur(10px);
+}
+
+.basic-tool-flyout::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.52), transparent);
+}
+
+.flyout-fly {
+  --flyout-offset: 38px;
+}
+
+.flyout-measure {
+  --flyout-offset: 76px;
+}
+
+.flyout-roam {
+  --flyout-offset: 114px;
+}
+
+.basic-tool-flyout::after {
+  content: '';
+  position: absolute;
+  left: 15px;
+  bottom: -5px;
+  width: 10px;
+  height: 10px;
+  border-right: 1px solid rgba(0, 229, 255, 0.34);
+  border-bottom: 1px solid rgba(0, 229, 255, 0.34);
+  background: rgba(13, 27, 49, 0.92);
+  transform: rotate(45deg);
 }
 
 .flyout-title {
   position: relative;
-  padding: 9px 12px 9px 32px;
-  border: 1px solid rgba(0, 167, 197, 0.42);
-  border-radius: 4px;
-  background: linear-gradient(90deg, rgba(0, 131, 153, 0.6), rgba(0, 82, 105, 0.5));
+  padding: 7px 9px 7px 25px;
+  border: 1px solid var(--sys-border-color-light);
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(0, 229, 255, 0.08), transparent 100%);
   color: #ffffff;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .flyout-title::before {
   content: '';
   position: absolute;
-  left: 12px;
+  left: 11px;
   top: 50%;
-  transform: translateY(-45%);
-  border-top: 6px solid #11c9ff;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
+  width: 8px;
+  height: 8px;
+  border: 1px solid rgba(115, 238, 248, 0.82);
+  border-radius: 50%;
+  background: rgba(115, 238, 248, 0.15);
+  transform: translateY(-50%);
 }
 
 .tool-input-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 7px;
 }
 
 .tool-input-grid label {
@@ -264,8 +353,9 @@ const handleClearRoam = () => {
   min-width: 0;
   flex-direction: column;
   gap: 5px;
-  color: rgba(217, 251, 255, 0.78);
+  color: #a8bfd0;
   font-size: 11px;
+  font-weight: 500;
 }
 
 .tool-input-grid label:nth-child(3) {
@@ -274,33 +364,45 @@ const handleClearRoam = () => {
 
 .basic-input {
   width: 100%;
-  height: 32px;
+  height: 30px;
   padding: 0 8px;
-  border: 1px solid rgba(0, 196, 230, 0.28);
-  border-radius: 4px;
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 5px;
   color: #ffffff;
-  background: rgba(1, 12, 25, 0.72);
+  background: rgba(0, 0, 0, 0.18);
   outline: none;
+  font-family: "Cascadia Mono", "Courier New", monospace;
+  font-size: 12px;
+  box-shadow: inset 0 0 8px rgba(0, 229, 255, 0.04);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
 }
 
 .basic-input:focus {
-  border-color: rgba(0, 229, 255, 0.72);
-  box-shadow: 0 0 10px rgba(0, 229, 255, 0.18);
+  border-color: rgba(0, 229, 255, 0.58);
+  background: rgba(0, 229, 255, 0.06);
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.12), inset 0 0 8px rgba(0, 229, 255, 0.05);
 }
 
 .sys-btn {
-  min-height: 32px;
-  border: 1px solid rgba(0, 167, 197, 0.42);
-  border-radius: 4px;
+  min-height: 30px;
+  border: 1px solid rgba(0, 229, 255, 0.22);
+  border-radius: 5px;
   color: #dffbff;
-  background: linear-gradient(180deg, rgba(0, 104, 124, 0.55), rgba(0, 45, 68, 0.58));
+  background: linear-gradient(180deg, rgba(0, 104, 124, 0.34), rgba(0, 45, 68, 0.44));
   cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: inset 0 0 8px rgba(0, 229, 255, 0.03);
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
 }
 
 .sys-btn:hover {
-  border-color: rgba(0, 229, 255, 0.86);
+  border-color: rgba(0, 229, 255, 0.58);
   color: #ffffff;
-  background: linear-gradient(180deg, rgba(0, 151, 185, 0.78), rgba(0, 74, 98, 0.82));
+  background: linear-gradient(180deg, rgba(0, 151, 185, 0.56), rgba(0, 74, 98, 0.7));
+  box-shadow: inset 0 0 10px rgba(0, 229, 255, 0.08);
+  transform: translateY(-1px);
 }
 
 .workflow-btn {
@@ -308,12 +410,64 @@ const handleClearRoam = () => {
 }
 
 .basic-flyout-status {
-  margin-top: 2px;
+  margin-top: 1px;
   padding: 7px 9px;
   border-left: 2px solid var(--sys-theme-color);
+  border-radius: 4px;
   color: #bcefff;
-  background: rgba(0, 229, 255, 0.08);
+  background: rgba(0, 229, 255, 0.06);
   font-size: 11px;
   line-height: 1.45;
 }
+
+@media (max-width: 1180px) {
+  .basic-icon-dock {
+    gap: 3px;
+  }
+
+  .basic-icon-btn {
+    flex-basis: 30px;
+    width: 30px;
+    height: 30px;
+  }
+
+  .basic-tool-flyout {
+    bottom: calc(100% + 12px);
+  }
+
+  .flyout-fly {
+    --flyout-offset: 36px;
+  }
+
+  .flyout-measure {
+    --flyout-offset: 72px;
+  }
+
+  .flyout-roam {
+    --flyout-offset: 108px;
+  }
+}
+
+@media (max-width: 760px) {
+  .basic-icon-dock {
+    gap: 2px;
+  }
+
+  .basic-icon-btn {
+    flex-basis: 30px;
+    width: 30px;
+    height: 30px;
+    border-radius: 5px;
+  }
+
+  .basic-icon-btn svg {
+    width: 17px;
+    height: 17px;
+  }
+
+  .basic-icon-btn::before {
+    display: none;
+  }
+}
+
 </style>

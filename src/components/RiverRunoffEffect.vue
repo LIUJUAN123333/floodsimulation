@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, watch } from 'vue';
 import * as Cesium from 'cesium';
-import riverData from '../data/xiaojiaqiao-river-network.json.json';
 
 type ArcGisPoint = [number, number] | [number, number, number];
 
@@ -72,7 +71,8 @@ const EXCLUDE_SOUTHEAST_OF_LAT = 31.648681;
 const breachPosition = Cesium.Cartesian3.fromDegrees(BREACH_LON, BREACH_LAT, FLOW_HEIGHT_M);
 const breachFlowPosition = Cesium.Cartesian3.fromDegrees(BREACH_LON, BREACH_LAT, FLOW_LINE_HEIGHT_M);
 const dataSourceName = 'xiaojiaqiao_river_runoff';
-const parsedRiverData = riverData as unknown as ArcGisRiverData;
+// The river-network dataset is optional in frontend-only checkouts.
+const parsedRiverData: ArcGisRiverData = { features: [] };
 
 let riverDataSource: Cesium.CustomDataSource | null = null;
 let runoffStartMs = 0;
