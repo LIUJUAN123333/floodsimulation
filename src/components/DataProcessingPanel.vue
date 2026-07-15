@@ -1,25 +1,34 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import * as Cesium from 'cesium';
 import FloodLoader from './FloodLoader.vue';
+import SceneEffectsPanel from './SceneEffectsPanel.vue';
 import StyledFileInput from './StyledFileInput.vue';
 import DrawTriangleMesh from '../js/DrawTriangleMesh';
 import {
   currentFloodPrimitive,
   floodPlaybackToken,
   lastLoadedFloodJson,
+  recordFloodPointDepth,
   recordMeshAreaPoint,
-  resetFloodAreaSeries
+  resetFloodAreaSeries,
+  resetFloodPointDepthSeries
 } from '../store/floodState';
 
 const props = defineProps<{
   viewer?: Cesium.Viewer | null;
   terrainEnabled?: boolean;
   panelActive?: boolean;
+  rainstormEnabled?: boolean;
+  riverRunoffEnabled?: boolean;
+  floodRenderEnabled?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'menu-select', id: string): void;
+  (e: 'toggle-rainstorm'): void;
+  (e: 'toggle-river-runoff'): void;
+  (e: 'toggle-flood-render'): void;
 }>();
 
 type MenuChild = { id: string; name: string };
@@ -70,8 +79,12 @@ const meshOpacity = ref(0.78);
 const meshHeightScale = ref(1);
 const meshColorRamp = ref('water');
 const meshPlaybackRate = ref(1);
+const renderSettingsExpanded = ref(false);
+const sceneEffectsExpanded = ref(false);
 const isMeshPlaying = ref(false);
 const isMeshPreloading = ref(false);
+const meshPlaybackDockVisible = ref(false);
+const meshDepthLegendVisible = ref(true);
 let meshPlaybackTimer: number | undefined;
 const meshTerrainHeightCache = new Map<string, number>();
 const meshFrameCache = new Map<string, any>();
@@ -86,6 +99,49 @@ const MESH_COLOR_RAMPS: Record<string, string[]> = {
   water: ['#d9fbff', '#87d8f5', '#3b9fe0', '#1766bd', '#102f83'],
   depth: ['#e9f9ff', '#a9dff7', '#4aa7dd', '#1761aa', '#092d68'],
   heat: ['#fff7a8', '#6ed6e6', '#2584d9', '#3846b5', '#32176b']
+};
+
+const meshPlaybackTitle = computed(() => {
+  const folderName = meshFolder.value.replace(/\\/g, '/').split('/').filter(Boolean).pop();
+  return folderName || '洪水动画';
+});
+
+const sceneRainstormEnabled = computed(() => Boolean(props.rainstormEnabled));
+const sceneRiverRunoffEnabled = computed(() => Boolean(props.riverRunoffEnabled));
+const sceneFloodRenderEnabled = computed(() => Boolean(props.floodRenderEnabled));
+
+const meshPlaybackStatusText = computed(() => {
+  if (isMeshPreloading.value) return '缓存中';
+  if (isMeshPlaying.value) return '播放中';
+  if (meshFrames.value.length) return '已暂停';
+  return '待加载';
+});
+
+const meshDepthLegend = computed(() => {
+  const match = meshDepthRange.value.match(/([\d.]+)\s*~\s*([\d.]+)/);
+  const min = match ? Number(match[1]) : 0;
+  const max = match ? Number(match[2]) : 0;
+  const mid = (min + max) / 2;
+  return {
+    min: `${min.toFixed(2)} m`,
+    mid: `${mid.toFixed(2)} m`,
+    max: `${max.toFixed(2)} m`
+  };
+});
+
+const showMeshPlaybackDock = () => {
+  if (meshFrames.value.length) {
+    meshPlaybackDockVisible.value = true;
+    meshDepthLegendVisible.value = true;
+  }
+};
+
+const hideMeshPlaybackDock = () => {
+  meshPlaybackDockVisible.value = false;
+};
+
+const hideMeshDepthLegend = () => {
+  meshDepthLegendVisible.value = false;
 };
 
 type MeshAreaVertex = {
@@ -115,9 +171,8 @@ function calculateMeshArea(vertices: MeshAreaVertex[], triangles: number[]) {
 }
 
 function formatArea(area: number) {
-  if (!Number.isFinite(area) || area <= 0) return '-';
-  if (area >= 1000000) return `${(area / 1000000).toFixed(3)} km²`;
-  return `${area.toLocaleString('zh-CN', { maximumFractionDigits: 0 })} m²`;
+  if (!Number.isFinite(area) || area <= 0) return '0 km²';
+  return `${Number((area / 1_000_000).toFixed(3))} km²`;
 }
 
 function formatEvolutionTime(totalSeconds: number) {
@@ -601,9 +656,7 @@ const renderMeshFrame = async (frameIndex: number, shouldFly = false, sessionTok
     removeMeshFlood();
     currentFloodPrimitive.value = primitive;
     props.viewer.scene.primitives.add(primitive);
-    if (!isMeshPlaying.value) {
-      lastLoadedFloodJson.value = mesh;
-    }
+    lastLoadedFloodJson.value = mesh;
 
     activeMeshFrameIndex.value = frameIndex;
     meshFileName.value = frame.name;
@@ -616,6 +669,7 @@ const renderMeshFrame = async (frameIndex: number, shouldFly = false, sessionTok
     const meshAreaM2 = calculateMeshAreaM2FromMesh(mesh);
     floodAreaText.value = formatArea(meshAreaM2);
     recordMeshAreaPoint(frameIndex + 1, meshAreaM2);
+    recordFloodPointDepth(frameIndex + 1, mesh);
     meshEvolutionTimeText.value = formatEvolutionTime((frameIndex + 1) * MESH_FRAME_SECONDS);
     if (!isMeshPlaying.value || frameIndex % 5 === 0) {
       meshStatus.value = `已渲染第 ${frameIndex + 1} / ${meshFrames.value.length} 帧：${frame.name}`;
@@ -652,7 +706,9 @@ const loadMeshAnimationFolder = async (folder: string) => {
     meshFolder.value = result.folder;
     meshFrames.value = result.frames.sort((a: any, b: any) => Number(a.index) - Number(b.index));
     resetFloodAreaSeries();
+    resetFloodPointDepthSeries();
     await renderMeshFrame(0, true);
+    showMeshPlaybackDock();
     void preloadMeshFrames(false);
   } catch (error) {
     meshStatus.value = `加载 Mesh 文件夹失败：${error instanceof Error ? error.message : String(error)}`;
@@ -766,6 +822,28 @@ const renderNextMeshFrame = () => {
   void renderMeshFrame(nextIndex);
 };
 
+const seekMeshFrame = (event: Event) => {
+  const target = event.target as HTMLInputElement;
+  const frameIndex = Number(target.value);
+  if (!meshFrames.value.length || !Number.isFinite(frameIndex)) {
+    return;
+  }
+  stopMeshPlayback();
+  void renderMeshFrame(Math.min(Math.max(Math.round(frameIndex), 0), meshFrames.value.length - 1));
+};
+
+const jumpMeshFrame = (offset: number) => {
+  if (!meshFrames.value.length) {
+    return;
+  }
+  stopMeshPlayback();
+  const nextIndex = Math.min(
+    Math.max(activeMeshFrameIndex.value + offset, 0),
+    meshFrames.value.length - 1
+  );
+  void renderMeshFrame(nextIndex);
+};
+
 const flyToMeshFlood = () => {
   const primitive = currentFloodPrimitive.value as (Cesium.Primitive & { _boundingSphereWorld?: Cesium.BoundingSphere }) | null;
   if (!primitive?._boundingSphereWorld || !props.viewer) {
@@ -779,6 +857,7 @@ const flyToMeshFlood = () => {
 
 const clearMeshFlood = () => {
   stopMeshPlayback();
+  hideMeshPlaybackDock();
   meshPreloadToken += 1;
   meshPreloadPromise = null;
   isMeshPreloading.value = false;
@@ -791,6 +870,8 @@ const clearMeshFlood = () => {
   floodAreaText.value = '-';
   meshEvolutionTimeText.value = '-';
   resetFloodAreaSeries();
+  resetFloodPointDepthSeries();
+  lastLoadedFloodJson.value = null;
   meshStatus.value = '洪水图层已清空';
 };
 
@@ -824,10 +905,10 @@ const menuItems = ref<MenuGroup[]>([
     name: '数据处理',
     expanded: true,
     children: [
-      { id: 'tif2asc', name: '格式转换' },
-      { id: 'roughness', name: '粗糙度计算' },
-      { id: 'rowcol', name: '获取行列号' },
-      { id: 'draw', name: '地形工具' }
+      { id: 'tif2asc', name: '高程格式转换' },
+      { id: 'roughness', name: '地形粗糙度计算' },
+      { id: 'draw', name: '溃口绘制' },
+      { id: 'rowcol', name: '溃口位置获取' }
     ]
   },
   {
@@ -861,6 +942,11 @@ const selectItem = (id: string) => {
       window.drawingModule?.initializeDrawingEventListeners?.();
     });
   }
+};
+
+const closeActiveToolPanel = () => {
+  activeItem.value = null;
+  emit('menu-select', '');
 };
 
 const isToolPanelActive = (id: string | null) => {
@@ -1391,8 +1477,9 @@ onBeforeUnmount(() => {
 
     <Teleport to="body">
       <div v-if="props.panelActive && isToolPanelActive(activeItem)" class="tool-panel">
+        <button type="button" class="floating-close-btn tool-close-btn" title="关闭" aria-label="关闭功能框" @click="closeActiveToolPanel">×</button>
         <div v-show="activeItem === 'tif2asc'" class="tool-block">
-        <h5>1. 格式转换</h5>
+        <h5>高程格式转换</h5>
         <form id="convertForm" enctype="multipart/form-data" @submit.prevent="handleConvertSubmit">
           <div class="form-group">
             <label class="form-label" for="convertFile">选择 TIFF 文件</label>
@@ -1415,7 +1502,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-show="activeItem === 'roughness'" class="tool-block">
-        <h5>2. 粗糙度计算</h5>
+        <h5>地形粗糙度计算</h5>
         <form id="roughnessForm" enctype="multipart/form-data" @submit.prevent="handleRoughnessSubmit">
           <div class="form-group">
             <label class="form-label" for="roughnessFile">选择 ASC/TXT 文件</label>
@@ -1453,7 +1540,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-show="activeItem === 'rowcol'" class="tool-block">
-        <h5>3. 根据坐标获取溃口行列号</h5>
+        <h5>溃口位置获取</h5>
         <form id="getAsciiValueForm" enctype="multipart/form-data" @submit.prevent="handleRowcolSubmit">
           <div class="form-group">
             <label class="form-label" for="asciiFile">选择 ASCII 文件</label>
@@ -1499,7 +1586,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div v-show="activeItem === 'draw'" class="tool-block">
-        <h5>4. 地形计算工具</h5>
+        <h5>溃口绘制</h5>
         <div class="form-group">
           <label class="form-label">在地形上绘线</label>
           <button type="button" class="btn btn-primary" id="startDrawing">开始绘制</button>
@@ -1531,6 +1618,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="props.panelActive && activeItem && !isToolPanelActive(activeItem)" class="tool-panel">
+      <button type="button" class="floating-close-btn tool-close-btn" title="关闭" aria-label="关闭功能框" @click="closeActiveToolPanel">×</button>
       <div class="tool-content">
         <h4 class="tool-title">{{ getActiveItemName() }}</h4>
         <div v-if="activeItem === 'simulate-flood'">
@@ -1581,7 +1669,7 @@ onBeforeUnmount(() => {
           </div>
         </div>
         <div v-else-if="activeItem === 'render-flood'">
-          <div class="panel-content">
+          <div class="panel-content render-flood-content">
             <label class="form-label">Mesh 文件夹</label>
             <div class="path-row">
               <input class="form-control" type="text" v-model="meshFolder" placeholder="选择包含 index.json 的目录" />
@@ -1589,48 +1677,61 @@ onBeforeUnmount(() => {
             </div>
 
             <div class="mesh-stats">
-              <div><span>当前帧</span><strong>{{ meshFrames.length ? `${activeMeshFrameIndex + 1} / ${meshFrames.length}` : '--' }}</strong></div>
               <div><span>点数</span><strong>{{ meshPointCount || '--' }}</strong></div>
               <div><span>三角面</span><strong>{{ meshTriangleCount || '--' }}</strong></div>
-              <div><span>水深范围</span><strong>{{ meshDepthRange }}</strong></div>
-            </div>
-            <div class="area-readout">
-              <span>当前洪水面积</span>
-              <strong>{{ floodAreaText }}</strong>
-            </div>
-            <div class="area-readout time-readout">
-              <span>演进时间</span>
-              <strong>{{ meshEvolutionTimeText }}</strong>
             </div>
 
-            <label class="form-label">透明度 {{ meshOpacity.toFixed(2) }}</label>
-            <input class="range-control" v-model.number="meshOpacity" type="range" min="0.1" max="1" step="0.05" @input="renderMeshFrame(activeMeshFrameIndex)" />
+            <div class="render-settings-group">
+              <button type="button" class="render-settings-header" @click="renderSettingsExpanded = !renderSettingsExpanded">
+                <span class="render-settings-arrow" :class="{ expanded: renderSettingsExpanded }">▶</span>
+                <span>渲染设置</span>
+              </button>
 
-            <label class="form-label">高度比例 {{ meshHeightScale.toFixed(1) }}</label>
-            <input class="range-control" v-model.number="meshHeightScale" type="range" min="0" max="5" step="0.1" @input="renderMeshFrame(activeMeshFrameIndex)" />
+              <div v-show="renderSettingsExpanded" class="render-settings-content">
+                <label class="form-label">透明度 {{ meshOpacity.toFixed(2) }}</label>
+                <input class="range-control" v-model.number="meshOpacity" type="range" min="0.1" max="1" step="0.05" @input="renderMeshFrame(activeMeshFrameIndex)" />
 
-            <label class="form-label">颜色方案</label>
-            <select class="form-control" v-model="meshColorRamp" @change="renderMeshFrame(activeMeshFrameIndex)">
-              <option value="water">水蓝</option>
-              <option value="depth">深水蓝</option>
-              <option value="heat">深度热图</option>
-            </select>
+                <label class="form-label">高度比例 {{ meshHeightScale.toFixed(1) }}</label>
+                <input class="range-control" v-model.number="meshHeightScale" type="range" min="0" max="5" step="0.1" @input="renderMeshFrame(activeMeshFrameIndex)" />
 
-            <label class="form-label">播放速率 {{ meshPlaybackRate.toFixed(2) }}x</label>
-            <input class="range-control" v-model.number="meshPlaybackRate" type="range" min="0.25" max="4" step="0.25" />
+                <label class="form-label">颜色方案</label>
+                <select class="form-control" v-model="meshColorRamp" @change="renderMeshFrame(activeMeshFrameIndex)">
+                  <option value="water">水蓝</option>
+                  <option value="depth">深水蓝</option>
+                  <option value="heat">深度热图</option>
+                </select>
+
+                <label class="form-label">播放速率 {{ meshPlaybackRate.toFixed(2) }}x</label>
+                <input class="range-control" v-model.number="meshPlaybackRate" type="range" min="0.25" max="4" step="0.25" />
+              </div>
+            </div>
+
+            <div class="render-settings-group scene-effects-group">
+              <button type="button" class="render-settings-header" @click="sceneEffectsExpanded = !sceneEffectsExpanded">
+                <span class="render-settings-arrow" :class="{ expanded: sceneEffectsExpanded }">▶</span>
+                <span>渲染场景效果</span>
+              </button>
+
+              <div v-show="sceneEffectsExpanded" class="render-settings-content scene-effects-content">
+                <SceneEffectsPanel
+                  class="render-scene-effects"
+                  :rainstorm-enabled="sceneRainstormEnabled"
+                  :river-runoff-enabled="sceneRiverRunoffEnabled"
+                  :flood-render-enabled="sceneFloodRenderEnabled"
+                  @toggle-rainstorm="emit('toggle-rainstorm')"
+                  @toggle-river-runoff="emit('toggle-river-runoff')"
+                  @toggle-flood-render="emit('toggle-flood-render')"
+                />
+              </div>
+            </div>
 
             <div class="mesh-actions">
               <button class="btn btn-secondary" @click="flyToMeshFlood" :disabled="!currentFloodPrimitive">定位洪水</button>
-              <button class="btn btn-primary" @click="toggleMeshPlayback" :disabled="!meshFrames.length">{{ isMeshPlaying ? '暂停播放' : isMeshPreloading ? '预加载中' : '连续播放' }}</button>
-              <button class="btn btn-secondary" @click="restartMeshPlayback" :disabled="!meshFrames.length">从头播放</button>
-              <button class="btn btn-secondary" @click="renderPreviousMeshFrame" :disabled="!meshFrames.length">上一帧</button>
-              <button class="btn btn-secondary" @click="renderNextMeshFrame" :disabled="!meshFrames.length">下一帧</button>
-              <button class="btn btn-secondary" @click="clearMeshFlood">清除图层</button>
             </div>
 
-            <div class="result" style="margin-top: 15px;">
-              <p class="text-muted" style="font-size: 12px;">{{ meshFileName }}</p>
-              <p :class="meshStatus.includes('失败') ? 'error-text' : 'result-text'" style="white-space: pre-wrap; font-size: 12px;">{{ meshStatus }}</p>
+            <div class="mesh-status-card">
+              <span class="mesh-file-name">{{ meshFileName }}</span>
+              <p :class="meshStatus.includes('失败') ? 'error-text' : 'result-text'">{{ meshStatus }}</p>
             </div>
           </div>
         </div>
@@ -1693,6 +1794,55 @@ onBeforeUnmount(() => {
         <p v-else>模块开发中...</p>
       </div>
     </div>
+
+    <div v-if="meshPlaybackDockVisible && meshDepthLegendVisible && meshFrames.length" class="mesh-depth-legend">
+      <button type="button" class="floating-close-btn legend-close-btn" title="关闭" aria-label="关闭水深图例" @click="hideMeshDepthLegend">×</button>
+      <strong>水深</strong>
+      <span>{{ meshDepthLegend.max }}</span>
+      <div class="depth-gradient"></div>
+      <span>{{ meshDepthLegend.mid }}</span>
+      <span>{{ meshDepthLegend.min }}</span>
+    </div>
+
+    <div v-if="meshPlaybackDockVisible && meshFrames.length" class="mesh-playback-dock">
+      <div class="playback-dock-header">
+        <h4>{{ meshPlaybackTitle }}</h4>
+        <div class="dock-header-actions">
+          <span class="playback-status-pill">{{ meshPlaybackStatusText }}</span>
+          <button type="button" class="dock-close-btn" title="关闭" aria-label="关闭控制框" @pointerdown.stop @click="hideMeshPlaybackDock">×</button>
+        </div>
+      </div>
+
+      <div class="playback-main-row">
+        <input
+          class="playback-progress"
+          type="range"
+          min="0"
+          :max="Math.max(meshFrames.length - 1, 0)"
+          :value="activeMeshFrameIndex"
+          step="1"
+          @change="seekMeshFrame"
+        />
+        <div class="playback-readout">
+          <strong>{{ activeMeshFrameIndex + 1 }} / {{ meshFrames.length }}</strong>
+          <span>演进时间 {{ meshEvolutionTimeText }}</span>
+        </div>
+      </div>
+
+      <div class="playback-primary-actions">
+        <button class="dock-action-btn" @click="restartMeshPlayback" :disabled="!meshFrames.length || isMeshPlaying">开始</button>
+        <button class="dock-action-btn" @click="toggleMeshPlayback" :disabled="!meshFrames.length || isMeshPlaying || isMeshPreloading">继续</button>
+        <button class="dock-action-btn active" @click="stopMeshPlayback" :disabled="!isMeshPlaying">暂停</button>
+        <button class="dock-action-btn danger" @click="clearMeshFlood">结束</button>
+      </div>
+
+      <div class="playback-secondary-actions">
+        <button type="button" @click="jumpMeshFrame(-30)" :disabled="!meshFrames.length">后退</button>
+        <button type="button" @click="renderPreviousMeshFrame" :disabled="!meshFrames.length">上一帧</button>
+        <button type="button" @click="renderNextMeshFrame" :disabled="!meshFrames.length">下一帧</button>
+        <button type="button" @click="jumpMeshFrame(30)" :disabled="!meshFrames.length">快进</button>
+      </div>
+    </div>
     </Teleport>
   </div>
 </template>
@@ -1719,7 +1869,7 @@ onBeforeUnmount(() => {
   pointer-events: auto;
   position: fixed;
   top: 90px;
-  right: 360px;
+  left: 360px;
   width: 320px;
   max-height: calc(100vh - 120px);
   background-color: var(--sys-glass-bg, rgba(4, 20, 37, 0.95));
@@ -1727,10 +1877,295 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   color: white;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
-  padding: 15px;
+  padding: 18px 15px 15px;
   overflow-y: auto;
   backdrop-filter: blur(10px);
   z-index: 9999;
+}
+
+.floating-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  color: #bae6fd;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 50%;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.floating-close-btn:hover {
+  color: #ffffff;
+  background: rgba(239, 68, 68, 0.22);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+.tool-close-btn {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+}
+
+.legend-close-btn {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 20px;
+  height: 20px;
+  font-size: 15px;
+}
+
+.mesh-playback-dock {
+  pointer-events: auto;
+  position: fixed;
+  right: 172px;
+  bottom: 48px;
+  width: min(400px, calc(100vw - 48px));
+  height: 224px;
+  min-width: 320px;
+  min-height: 176px;
+  max-width: calc(100vw - 220px);
+  max-height: calc(100vh - 96px);
+  padding: 16px 20px;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 229, 255, 0.2);
+  border-radius: 12px;
+  color: #e0f2fe;
+  background: rgba(8, 22, 38, 0.75);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
+  z-index: 10040;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  overflow: auto;
+  resize: both;
+}
+
+.playback-dock-header,
+.playback-main-row,
+.dock-header-actions,
+.playback-primary-actions,
+.playback-secondary-actions {
+  display: flex;
+  align-items: center;
+}
+
+.playback-dock-header {
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.playback-dock-header h4 {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  color: #e0f2fe;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.playback-dock-header h4::before {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 14px;
+  margin-right: 6px;
+  border-radius: 2px;
+  vertical-align: -2px;
+  background: #00e5ff;
+  box-shadow: 0 0 6px rgba(0, 229, 255, 0.6);
+}
+
+.dock-header-actions {
+  gap: 8px;
+}
+
+.playback-status-pill {
+  padding: 2px 10px;
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  border-radius: 10px;
+  color: #00e5ff;
+  background: rgba(0, 229, 255, 0.1);
+  text-align: center;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dock-close-btn {
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 50%;
+  color: #bae6fd;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.playback-main-row {
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 0;
+}
+
+.playback-progress {
+  flex: 1;
+  min-width: 0;
+  accent-color: #00e5ff;
+}
+
+.playback-readout {
+  flex: 0 0 136px;
+  min-width: 0;
+  color: #67e8f9;
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.playback-readout strong,
+.playback-readout span {
+  display: block;
+}
+
+.playback-readout strong {
+  color: #bae6fd;
+  font-size: 12px;
+}
+
+.playback-readout span {
+  margin-top: 3px;
+  font-size: 11px;
+}
+
+.playback-primary-actions {
+  justify-content: center;
+  gap: 8px;
+  padding-bottom: 0;
+  border-bottom: 0;
+  flex-wrap: wrap;
+}
+
+.dock-action-btn {
+  min-width: 60px;
+  height: auto;
+  padding: 6px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  color: #e0f2fe;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.dock-action-btn.active {
+  border-color: rgba(127, 182, 213, 0.52);
+}
+
+.dock-action-btn.danger {
+  border-color: rgba(239, 68, 68, 0.3);
+  color: #fca5a5;
+  background: rgba(239, 68, 68, 0.15);
+}
+
+.dock-action-btn:disabled,
+.playback-secondary-actions button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.playback-secondary-actions {
+  justify-content: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  flex-wrap: wrap;
+}
+
+.playback-secondary-actions button {
+  min-width: 80px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: #7dd3fc;
+  background: transparent;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.mesh-depth-legend {
+  pointer-events: auto;
+  position: fixed;
+  right: 44px;
+  bottom: 48px;
+  width: 104px;
+  height: 224px;
+  min-width: 96px;
+  min-height: 168px;
+  max-width: 180px;
+  max-height: calc(100vh - 96px);
+  padding: 12px 10px;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 12px;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto 1fr auto;
+  column-gap: 8px;
+  align-items: center;
+  color: #e0f2fe;
+  background: rgba(8, 22, 38, 0.72);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(12px);
+  z-index: 10040;
+  overflow: auto;
+  resize: both;
+}
+
+.mesh-depth-legend strong {
+  grid-column: 1 / -1;
+  margin-bottom: 8px;
+  color: #bae6fd;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.depth-gradient {
+  grid-row: 2 / 5;
+  width: 18px;
+  height: 128px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 5px;
+  background: linear-gradient(to bottom, rgb(9, 9, 145) 0%, rgb(54, 44, 163) 24%, rgb(101, 101, 191) 50%, rgb(151, 179, 222) 74%, rgb(182, 237, 240) 100%);
+  box-shadow: inset 0 0 8px rgba(0, 0, 0, 0.35), 0 0 10px rgba(0, 229, 255, 0.18);
+}
+
+.mesh-depth-legend span {
+  color: #dbeafe;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .menu-title {
@@ -1809,10 +2244,35 @@ onBeforeUnmount(() => {
 .tool-title {
   margin: 0 0 10px 0;
   border-bottom: 1px solid var(--sys-border-color, #00e5ff);
-  padding-bottom: 8px;
+  padding: 0 34px 8px 0;
   color: var(--sys-theme-color, #00e5ff);
   font-size: 16px;
   text-shadow: var(--sys-text-glow);
+}
+
+.tool-block h5 {
+  margin: 0 0 10px 0;
+  border-bottom: 1px solid var(--sys-border-color, #00e5ff);
+  padding: 0 34px 8px 0;
+  color: var(--sys-theme-color, #00e5ff);
+  font-size: 16px;
+  line-height: 1.35;
+  text-shadow: var(--sys-text-glow);
+}
+
+.tool-block form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.tool-block .form-group {
+  margin-bottom: 0;
+}
+
+.tool-block .btn {
+  align-self: flex-start;
+  margin-top: 4px;
 }
 
 .form-group {
@@ -1871,19 +2331,50 @@ onBeforeUnmount(() => {
   accent-color: var(--sys-theme-color, #00e5ff);
 }
 
+.render-flood-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.render-flood-content .form-label {
+  margin: 0;
+  color: #bdd4df;
+  font-size: 12px;
+}
+
+.render-flood-content .path-row {
+  margin-bottom: 2px;
+  gap: 8px;
+}
+
+.render-flood-content .form-control {
+  min-height: 36px;
+  border-color: rgba(0, 229, 255, 0.12);
+  background: rgba(3, 14, 24, 0.72);
+  font-weight: 600;
+}
+
+.render-flood-content .path-btn {
+  min-height: 36px;
+  padding: 0 14px;
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
 .mesh-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin: 12px 0;
+  gap: 10px;
+  margin: 4px 0 0;
 }
 
 .mesh-stats div {
-  min-height: 54px;
-  padding: 8px;
-  border: 1px solid var(--sys-border-color-light, rgba(0, 229, 255, 0.1));
-  border-radius: 4px;
-  background: rgba(0, 0, 0, 0.22);
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 229, 255, 0.13);
+  border-radius: 6px;
+  background: linear-gradient(145deg, rgba(6, 24, 37, 0.78), rgba(2, 12, 22, 0.58));
+  box-shadow: inset 0 0 14px rgba(0, 229, 255, 0.035);
 }
 
 .mesh-stats span {
@@ -1896,7 +2387,8 @@ onBeforeUnmount(() => {
 .mesh-stats strong {
   display: block;
   color: #e5f9ff;
-  font-size: 12px;
+  font-size: 15px;
+  font-weight: 800;
   line-height: 1.3;
   word-break: break-word;
 }
@@ -1930,16 +2422,173 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
+.render-settings-group {
+  margin: 2px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 229, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(3, 18, 32, 0.42);
+}
+
+.render-settings-header {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  color: #bdeeff;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.render-settings-header::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  margin-left: 10px;
+  background: linear-gradient(90deg, rgba(0, 229, 255, 0.28), transparent);
+}
+
+.render-settings-arrow {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin-right: 6px;
+  border: 1px solid rgba(0, 229, 255, 0.24);
+  border-radius: 50%;
+  color: var(--sys-theme-color, #00e5ff);
+  background: rgba(0, 229, 255, 0.08);
+  font-size: 10px;
+  line-height: 17px;
+  text-align: center;
+  transition: transform 0.2s ease;
+}
+
+.render-settings-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.render-settings-content {
+  padding: 10px 0 0;
+}
+
+.render-settings-content .form-label {
+  margin-top: 8px;
+  color: #a8bed0;
+  font-size: 12px;
+}
+
+.scene-effects-group {
+  padding-bottom: 8px;
+}
+
+.scene-effects-content {
+  padding-top: 10px;
+}
+
+.scene-effects-content :deep(.render-scene-effects.scene-effects-panel) {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.scene-effects-content :deep(.panel-heading) {
+  display: none;
+}
+
+.scene-effects-content :deep(.effect-toggle) {
+  min-height: 50px;
+  margin-bottom: 8px;
+  border-color: rgba(0, 229, 255, 0.14);
+  background: linear-gradient(145deg, rgba(6, 24, 37, 0.78), rgba(2, 12, 22, 0.58));
+}
+
+.scene-effects-content :deep(.effect-toggle:hover),
+.scene-effects-content :deep(.effect-toggle.active) {
+  border-color: rgba(0, 229, 255, 0.42);
+  background: rgba(0, 229, 255, 0.09);
+}
+
+.scene-effects-content :deep(.effect-icon) {
+  background: rgba(0, 229, 255, 0.08);
+}
+
+.scene-effects-content :deep(.effect-slots) {
+  gap: 7px;
+}
+
+.scene-effects-content :deep(.effect-slots span),
+.scene-effects-content :deep(.effect-slots button) {
+  min-height: 30px;
+  border-color: rgba(0, 229, 255, 0.14);
+  background: rgba(0, 229, 255, 0.035);
+}
+
 .mesh-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 12px;
+  display: flex;
+  margin: 0 0 2px;
 }
 
 .mesh-actions .btn {
   width: 100%;
+  min-height: 36px;
+  padding: 6px 12px;
   margin: 0;
+  border-color: rgba(0, 229, 255, 0.28);
+  border-radius: 6px;
+  color: #8fe9ff;
+  background: rgba(0, 229, 255, 0.055);
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: none;
+}
+
+.mesh-actions .btn::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  display: inline-block;
+  border: 2px solid currentColor;
+  border-radius: 50%;
+  vertical-align: 1px;
+}
+
+.mesh-actions .btn:hover:not(:disabled) {
+  color: #ffffff;
+  border-color: rgba(0, 229, 255, 0.5);
+  background: rgba(0, 229, 255, 0.14);
+}
+
+.mesh-status-card {
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(0, 229, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(2, 13, 23, 0.42);
+}
+
+.mesh-file-name {
+  display: block;
+  margin-bottom: 6px;
+  color: #9eb4c3;
+  font-size: 12px;
+  line-height: 1.3;
+  word-break: break-word;
+}
+
+.mesh-status-card p {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .btn {

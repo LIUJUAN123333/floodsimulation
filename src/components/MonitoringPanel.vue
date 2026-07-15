@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import FpsWidget from './FpsWidget.vue';
-import AccuracyEvaluationPanel from './AccuracyEvaluationPanel.vue';
 import type { Viewer } from 'cesium';
 
 withDefaults(defineProps<{
@@ -67,13 +66,36 @@ const statusText: Record<StationStatus, string> = {
   watch: '关注',
   warning: '超警'
 };
+
+type MonitorGroupId = 'status' | 'trends' | 'stationAlarm';
+
+const monitorGroups = ref<Array<{ id: MonitorGroupId; title: string; expanded: boolean }>>([
+  { id: 'status', title: '运行状态', expanded: false },
+  { id: 'trends', title: '监测趋势', expanded: false },
+  { id: 'stationAlarm', title: '站点告警', expanded: false }
+]);
+
+const isMonitorGroupExpanded = (id: MonitorGroupId) => (
+  monitorGroups.value.find((group) => group.id === id)?.expanded ?? false
+);
+
+const toggleMonitorGroup = (id: MonitorGroupId) => {
+  const group = monitorGroups.value.find((item) => item.id === id);
+  if (group) {
+    group.expanded = !group.expanded;
+  }
+};
 </script>
 
 <template>
   <section class="monitor-panel">
-    <FpsWidget mode="inline" />
-    <AccuracyEvaluationPanel :viewer="viewer" />
-
+    <div class="monitor-group">
+      <button type="button" class="monitor-group-header" @click="toggleMonitorGroup('status')">
+        <span class="monitor-group-arrow" :class="{ expanded: isMonitorGroupExpanded('status') }">▶</span>
+        <span>运行状态</span>
+      </button>
+      <div v-show="isMonitorGroupExpanded('status')" class="monitor-group-content">
+        <FpsWidget mode="inline" />
     <div class="summary-grid">
       <div class="summary-card">
         <span class="summary-label">在线站点</span>
@@ -96,7 +118,15 @@ const statusText: Record<StationStatus, string> = {
         <em>m³/s</em>
       </div>
     </div>
+      </div>
+    </div>
 
+    <div class="monitor-group">
+      <button type="button" class="monitor-group-header" @click="toggleMonitorGroup('trends')">
+        <span class="monitor-group-arrow" :class="{ expanded: isMonitorGroupExpanded('trends') }">▶</span>
+        <span>监测趋势</span>
+      </button>
+      <div v-show="isMonitorGroupExpanded('trends')" class="monitor-group-content">
     <div class="chart-card">
       <div class="card-heading">
         <span>控制断面水位过程线</span>
@@ -139,7 +169,15 @@ const statusText: Record<StationStatus, string> = {
         </div>
       </div>
     </div>
+      </div>
+    </div>
 
+    <div class="monitor-group">
+      <button type="button" class="monitor-group-header" @click="toggleMonitorGroup('stationAlarm')">
+        <span class="monitor-group-arrow" :class="{ expanded: isMonitorGroupExpanded('stationAlarm') }">▶</span>
+        <span>站点告警</span>
+      </button>
+      <div v-show="isMonitorGroupExpanded('stationAlarm')" class="monitor-group-content">
     <div class="station-card">
       <div class="card-heading">
         <span>水位监测站</span>
@@ -170,11 +208,56 @@ const statusText: Record<StationStatus, string> = {
       <span class="alarm-label">最新告警</span>
       <p>峡口断面站水位已超过警戒线 0.25 m，建议联动下游淹没范围推演与重点区域巡查。</p>
     </div>
+      </div>
+    </div>
   </section>
 </template>
 
 <style scoped>
 .monitor-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.monitor-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.monitor-group-header {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 10px;
+  border: 1px solid var(--sys-border-color-light, rgba(0, 229, 255, 0.1));
+  border-radius: 4px;
+  color: #ffffff;
+  background-color: var(--sys-bg-glow, rgba(0, 229, 255, 0.15));
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: bold;
+  text-align: left;
+  transition: all 0.3s ease;
+}
+
+.monitor-group-header:hover {
+  background-color: var(--sys-bg-glow-active, rgba(0, 229, 255, 0.3));
+}
+
+.monitor-group-arrow {
+  margin-right: 8px;
+  color: #00aeff;
+  font-size: 10px;
+  transition: transform 0.2s;
+}
+
+.monitor-group-arrow.expanded {
+  transform: rotate(90deg);
+}
+
+.monitor-group-content {
   display: flex;
   flex-direction: column;
   gap: 12px;

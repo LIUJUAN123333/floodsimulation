@@ -180,7 +180,7 @@ const formatDistance = (meters: number) => {
 };
 
 const formatArea = (squareMeters: number) => {
-  return squareMeters >= 1000000 ? `${(squareMeters / 1000000).toFixed(3)} km²` : `${squareMeters.toFixed(2)} m²`;
+  return `${Number((squareMeters / 1_000_000).toFixed(3))} km²`;
 };
 
 const getSurfaceDistance = (positions: Cesium.Cartesian3[]) => {

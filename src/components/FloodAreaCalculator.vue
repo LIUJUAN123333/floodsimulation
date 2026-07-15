@@ -11,15 +11,7 @@ const floodAreaM2 = computed(() => currentFloodAreaM2.value);
     <div class="panel-content">
       <div class="info-row">
         <span>当前淹没面积:</span>
-        <span class="value">{{ (floodAreaM2 / 1000000).toFixed(6) }} km²</span>
-      </div>
-      <div class="info-row" style="margin-top: 5px;">
-        <span></span>
-        <span class="value">{{ (floodAreaM2 / 10000).toFixed(6) }} hm²</span>
-      </div>
-      <div class="info-row" style="margin-top: 5px;">
-        <span></span>
-        <span class="value">{{ floodAreaM2.toFixed(3) }} m²</span>
+        <span class="value">{{ Number((floodAreaM2 / 1_000_000).toFixed(3)) }} km²</span>
       </div>
     </div>
   </div>

@@ -42,8 +42,9 @@ const utmZone = ref<number>(48);
 const parsedCellsize = ref<number | null>(null);
 const coordMessage = ref('');
 const floodFiles = ref<File[]>([]);
+const showcaseDepthLegendVisible = ref(true);
 
-type ShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao' | 'bonn';
+type ShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao';
 
 type ShowcaseManifest = {
   success: boolean;
@@ -167,7 +168,7 @@ const showcasePlayback = reactive({
 });
 
 const showcaseDockPosition = reactive({
-  left: 28,
+  left: null as number | null,
   top: null as number | null
 });
 const showcaseDockDrag = reactive({
@@ -395,13 +396,6 @@ const getShowcasePlaybackOptions = (
     };
   }
 
-  if (caseId === 'bonn') {
-    return {
-      ...baseOptions,
-      frameIntervalMs: 10
-    };
-  }
-
   return {
     ...baseOptions,
     frameIntervalMs: 12
@@ -551,15 +545,11 @@ const handleShowcaseStop = () => {
 };
 
 const handleShowcaseClose = () => {
-  nextPlaybackToken();
-  abortShowcaseFetches();
-  removeCurrentFloodPrimitive();
-  isLoading.value = false;
   showcasePlayback.visible = false;
-  showcasePlayback.status = 'ended';
-  showcasePlayback.pendingSeekIndex = null;
-  showcasePlayback.pauseAfterNextFrame = false;
-  coordMessage.value = '';
+};
+
+const hideShowcaseDepthLegend = () => {
+  showcaseDepthLegendVisible.value = false;
 };
 
 const jumpShowcaseFrames = (delta: number, pauseAfterJump: boolean) => {
@@ -1366,6 +1356,7 @@ const playShowcase = async (
     const optimizedTotalBytes = optimizedFrameSizes?.reduce((sum, size) => sum + size, 0);
     const normalizedStartIndex = Math.min(Math.max(Math.round(startFrameIndex), 0), floodUrls.length - 1);
     showcasePlayback.visible = true;
+    showcaseDepthLegendVisible.value = true;
     showcasePlayback.status = 'buffering';
     showcasePlayback.caseId = caseId;
     currentShowcaseCaseId.value = caseId;
@@ -1559,7 +1550,8 @@ defineExpose({ playShowcase, resetFloodData });
         </div>
       </div>
 
-      <div class="showcase-depth-legend" aria-label="水深图例">
+      <div v-if="showcaseDepthLegendVisible" class="showcase-depth-legend" aria-label="水深图例">
+        <button type="button" class="showcase-close-btn legend-close-btn" title="关闭" aria-label="关闭水深图例" @pointerdown.stop @click="hideShowcaseDepthLegend">×</button>
         <div class="legend-title drag-handle" title="拖动图例和控制框位置" @pointerdown="startShowcaseDockDrag">水深</div>
         <div class="legend-body">
           <div class="legend-ramp" />
@@ -1601,7 +1593,7 @@ defineExpose({ playShowcase, resetFloodData });
   bottom: var(--system-bottom-safe-space, 80px);
   z-index: 10050;
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 12px;
   pointer-events: none;
 }
@@ -1618,7 +1610,13 @@ defineExpose({ playShowcase, resetFloodData });
 .showcase-playback-panel {
   position: relative;
   width: min(400px, calc(100vw - 48px));
+  height: 224px;
+  min-width: 320px;
+  min-height: 176px;
+  max-width: calc(100vw - 220px);
+  max-height: calc(100vh - 96px);
   padding: 16px 20px;
+  box-sizing: border-box;
   color: #e0f2fe;
   background: rgba(8, 22, 38, 0.75);
   border: 1px solid rgba(0, 229, 255, 0.2);
@@ -1627,12 +1625,20 @@ defineExpose({ playShowcase, resetFloodData });
   backdrop-filter: blur(12px);
   pointer-events: auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  overflow: auto;
+  resize: both;
 }
 
 .showcase-depth-legend {
-  order: -1;
+  position: relative;
   width: 104px;
+  height: 224px;
+  min-width: 96px;
+  min-height: 168px;
+  max-width: 180px;
+  max-height: calc(100vh - 96px);
   padding: 12px 10px;
+  box-sizing: border-box;
   color: #e0f2fe;
   background: rgba(8, 22, 38, 0.72);
   border: 1px solid rgba(0, 229, 255, 0.18);
@@ -1640,6 +1646,17 @@ defineExpose({ playShowcase, resetFloodData });
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38), inset 0 1px 1px rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(12px);
   pointer-events: auto;
+  overflow: auto;
+  resize: both;
+}
+
+.showcase-depth-legend .legend-close-btn {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 20px;
+  height: 20px;
+  font-size: 15px;
 }
 
 .legend-title {
