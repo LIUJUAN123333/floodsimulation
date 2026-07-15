@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import * as Cesium from 'cesium';
 import FloodLoader from './FloodLoader.vue';
+import SceneEffectsPanel from './SceneEffectsPanel.vue';
 import StyledFileInput from './StyledFileInput.vue';
 import DrawTriangleMesh from '../js/DrawTriangleMesh';
 import {
@@ -18,10 +19,16 @@ const props = defineProps<{
   viewer?: Cesium.Viewer | null;
   terrainEnabled?: boolean;
   panelActive?: boolean;
+  rainstormEnabled?: boolean;
+  riverRunoffEnabled?: boolean;
+  floodRenderEnabled?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: 'menu-select', id: string): void;
+  (e: 'toggle-rainstorm'): void;
+  (e: 'toggle-river-runoff'): void;
+  (e: 'toggle-flood-render'): void;
 }>();
 
 type MenuChild = { id: string; name: string };
@@ -73,6 +80,7 @@ const meshHeightScale = ref(1);
 const meshColorRamp = ref('water');
 const meshPlaybackRate = ref(1);
 const renderSettingsExpanded = ref(false);
+const sceneEffectsExpanded = ref(false);
 const isMeshPlaying = ref(false);
 const isMeshPreloading = ref(false);
 const meshPlaybackDockVisible = ref(false);
@@ -97,6 +105,10 @@ const meshPlaybackTitle = computed(() => {
   const folderName = meshFolder.value.replace(/\\/g, '/').split('/').filter(Boolean).pop();
   return folderName || '洪水动画';
 });
+
+const sceneRainstormEnabled = computed(() => Boolean(props.rainstormEnabled));
+const sceneRiverRunoffEnabled = computed(() => Boolean(props.riverRunoffEnabled));
+const sceneFloodRenderEnabled = computed(() => Boolean(props.floodRenderEnabled));
 
 const meshPlaybackStatusText = computed(() => {
   if (isMeshPreloading.value) return '缓存中';
@@ -1694,6 +1706,25 @@ onBeforeUnmount(() => {
               </div>
             </div>
 
+            <div class="render-settings-group scene-effects-group">
+              <button type="button" class="render-settings-header" @click="sceneEffectsExpanded = !sceneEffectsExpanded">
+                <span class="render-settings-arrow" :class="{ expanded: sceneEffectsExpanded }">▶</span>
+                <span>渲染场景效果</span>
+              </button>
+
+              <div v-show="sceneEffectsExpanded" class="render-settings-content scene-effects-content">
+                <SceneEffectsPanel
+                  class="render-scene-effects"
+                  :rainstorm-enabled="sceneRainstormEnabled"
+                  :river-runoff-enabled="sceneRiverRunoffEnabled"
+                  :flood-render-enabled="sceneFloodRenderEnabled"
+                  @toggle-rainstorm="emit('toggle-rainstorm')"
+                  @toggle-river-runoff="emit('toggle-river-runoff')"
+                  @toggle-flood-render="emit('toggle-flood-render')"
+                />
+              </div>
+            </div>
+
             <div class="mesh-actions">
               <button class="btn btn-secondary" @click="flyToMeshFlood" :disabled="!currentFloodPrimitive">定位洪水</button>
             </div>
@@ -1838,7 +1869,7 @@ onBeforeUnmount(() => {
   pointer-events: auto;
   position: fixed;
   top: 90px;
-  right: 360px;
+  left: 360px;
   width: 320px;
   max-height: calc(100vh - 120px);
   background-color: var(--sys-glass-bg, rgba(4, 20, 37, 0.95));
@@ -1894,10 +1925,16 @@ onBeforeUnmount(() => {
 .mesh-playback-dock {
   pointer-events: auto;
   position: fixed;
-  left: 166px;
+  right: 172px;
   bottom: 48px;
   width: min(400px, calc(100vw - 48px));
+  height: 224px;
+  min-width: 320px;
+  min-height: 176px;
+  max-width: calc(100vw - 220px);
+  max-height: calc(100vh - 96px);
   padding: 16px 20px;
+  box-sizing: border-box;
   border: 1px solid rgba(0, 229, 255, 0.2);
   border-radius: 12px;
   color: #e0f2fe;
@@ -1906,6 +1943,8 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(12px);
   z-index: 10040;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  overflow: auto;
+  resize: both;
 }
 
 .playback-dock-header,
@@ -2076,10 +2115,16 @@ onBeforeUnmount(() => {
 .mesh-depth-legend {
   pointer-events: auto;
   position: fixed;
-  left: 44px;
+  right: 44px;
   bottom: 48px;
   width: 104px;
+  height: 224px;
+  min-width: 96px;
+  min-height: 168px;
+  max-width: 180px;
+  max-height: calc(100vh - 96px);
   padding: 12px 10px;
+  box-sizing: border-box;
   border: 1px solid rgba(0, 229, 255, 0.18);
   border-radius: 12px;
   display: grid;
@@ -2092,6 +2137,8 @@ onBeforeUnmount(() => {
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38), inset 0 1px 1px rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(12px);
   z-index: 10040;
+  overflow: auto;
+  resize: both;
 }
 
 .mesh-depth-legend strong {
@@ -2432,6 +2479,56 @@ onBeforeUnmount(() => {
   margin-top: 8px;
   color: #a8bed0;
   font-size: 12px;
+}
+
+.scene-effects-group {
+  padding-bottom: 8px;
+}
+
+.scene-effects-content {
+  padding-top: 10px;
+}
+
+.scene-effects-content :deep(.render-scene-effects.scene-effects-panel) {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.scene-effects-content :deep(.panel-heading) {
+  display: none;
+}
+
+.scene-effects-content :deep(.effect-toggle) {
+  min-height: 50px;
+  margin-bottom: 8px;
+  border-color: rgba(0, 229, 255, 0.14);
+  background: linear-gradient(145deg, rgba(6, 24, 37, 0.78), rgba(2, 12, 22, 0.58));
+}
+
+.scene-effects-content :deep(.effect-toggle:hover),
+.scene-effects-content :deep(.effect-toggle.active) {
+  border-color: rgba(0, 229, 255, 0.42);
+  background: rgba(0, 229, 255, 0.09);
+}
+
+.scene-effects-content :deep(.effect-icon) {
+  background: rgba(0, 229, 255, 0.08);
+}
+
+.scene-effects-content :deep(.effect-slots) {
+  gap: 7px;
+}
+
+.scene-effects-content :deep(.effect-slots span),
+.scene-effects-content :deep(.effect-slots button) {
+  min-height: 30px;
+  border-color: rgba(0, 229, 255, 0.14);
+  background: rgba(0, 229, 255, 0.035);
 }
 
 .mesh-actions {

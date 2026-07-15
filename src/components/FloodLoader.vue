@@ -168,7 +168,7 @@ const showcasePlayback = reactive({
 });
 
 const showcaseDockPosition = reactive({
-  left: 28,
+  left: null as number | null,
   top: null as number | null
 });
 const showcaseDockDrag = reactive({
@@ -188,8 +188,8 @@ const formatShowcaseElapsedTime = (frameIndex: number) => {
   return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
 };
 const showcaseDockStyle = computed(() => (
-  showcaseDockPosition.top === null
-    ? { left: `${showcaseDockPosition.left}px`, top: 'auto', bottom: '48px' }
+  showcaseDockPosition.top === null || showcaseDockPosition.left === null
+    ? { left: 'auto', right: '44px', top: 'auto', bottom: '48px' }
     : { left: `${showcaseDockPosition.left}px`, top: `${showcaseDockPosition.top}px`, bottom: 'auto' }
 ));
 const showcaseMaxFrameIndex = computed(() => Math.max(showcasePlayback.totalFrames - 1, 0));
@@ -1579,11 +1579,11 @@ defineExpose({ playShowcase, resetFloodData });
 <style scoped>
 .showcase-playback-dock {
   position: fixed;
-  left: 28px;
+  right: 44px;
   bottom: 48px;
   z-index: 10050;
   display: flex;
-  align-items: flex-end;
+  align-items: stretch;
   gap: 12px;
   pointer-events: none;
 }
@@ -1600,7 +1600,13 @@ defineExpose({ playShowcase, resetFloodData });
 .showcase-playback-panel {
   position: relative;
   width: min(400px, calc(100vw - 48px));
+  height: 224px;
+  min-width: 320px;
+  min-height: 176px;
+  max-width: calc(100vw - 220px);
+  max-height: calc(100vh - 96px);
   padding: 16px 20px;
+  box-sizing: border-box;
   color: #e0f2fe;
   background: rgba(8, 22, 38, 0.75);
   border: 1px solid rgba(0, 229, 255, 0.2);
@@ -1609,13 +1615,20 @@ defineExpose({ playShowcase, resetFloodData });
   backdrop-filter: blur(12px);
   pointer-events: auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  overflow: auto;
+  resize: both;
 }
 
 .showcase-depth-legend {
   position: relative;
-  order: -1;
   width: 104px;
+  height: 224px;
+  min-width: 96px;
+  min-height: 168px;
+  max-width: 180px;
+  max-height: calc(100vh - 96px);
   padding: 12px 10px;
+  box-sizing: border-box;
   color: #e0f2fe;
   background: rgba(8, 22, 38, 0.72);
   border: 1px solid rgba(0, 229, 255, 0.18);
@@ -1623,6 +1636,8 @@ defineExpose({ playShowcase, resetFloodData });
   box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38), inset 0 1px 1px rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(12px);
   pointer-events: auto;
+  overflow: auto;
+  resize: both;
 }
 
 .showcase-depth-legend .legend-close-btn {
@@ -1996,7 +2011,7 @@ defineExpose({ playShowcase, resetFloodData });
 
 @media (max-width: 640px) {
   .showcase-playback-dock {
-    left: 16px;
+    right: 16px;
     bottom: 44px;
     flex-direction: column;
     align-items: flex-start;

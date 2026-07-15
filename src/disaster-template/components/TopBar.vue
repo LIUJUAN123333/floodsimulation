@@ -7,10 +7,12 @@ const props = withDefaults(
   defineProps<{
     systemTitle?: string;
     activeSubsystem?: SubsystemId;
+    showSubsystemDock?: boolean;
   }>(),
   {
     systemTitle: '洪水动态模拟与三维可视化系统',
-    activeSubsystem: 'flood'
+    activeSubsystem: 'flood',
+    showSubsystemDock: true
   }
 );
 
@@ -82,7 +84,7 @@ onUnmounted(() => {
 <template>
   <div class="layout-wrapper">
     <!-- 左侧竖列灾害图标导航 -->
-    <div class="side-nav-dock">
+    <div v-if="props.showSubsystemDock" class="side-nav-dock">
       <div
         v-for="sys in subsystemItems"
         :key="sys.id"

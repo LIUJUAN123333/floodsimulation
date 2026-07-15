@@ -13,11 +13,21 @@ const PLOT_LEFT = 54;
 const PLOT_RIGHT = 344;
 const PLOT_TOP = 16;
 const PLOT_BOTTOM = 126;
+const DEFAULT_PANEL_WIDTH = 420;
+const DEFAULT_PANEL_HEIGHT = 288;
+const DEFAULT_PANEL_MARGIN_RIGHT = 28;
+const DEFAULT_PANEL_TOP = 118;
+
+const getDefaultPanelLeft = () => (
+  typeof window === 'undefined'
+    ? DEFAULT_PANEL_MARGIN_RIGHT
+    : Math.max(12, window.innerWidth - DEFAULT_PANEL_WIDTH - DEFAULT_PANEL_MARGIN_RIGHT)
+);
 
 const panelRef = ref<HTMLElement | null>(null);
 const panelDismissed = ref(false);
-const panelPosition = reactive({ left: 28, top: 118 });
-const panelSize = reactive({ width: 420, height: 288 });
+const panelPosition = reactive({ left: getDefaultPanelLeft(), top: DEFAULT_PANEL_TOP });
+const panelSize = reactive({ width: DEFAULT_PANEL_WIDTH, height: DEFAULT_PANEL_HEIGHT });
 const dragState = reactive({
   active: false,
   offsetX: 0,

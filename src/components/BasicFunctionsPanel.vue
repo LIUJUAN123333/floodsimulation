@@ -163,7 +163,7 @@ const handleClearRoam = () => {
 .basic-icon-dock {
   position: absolute;
   top: 112px;
-  right: 24px;
+  left: 20px;
   z-index: 10020;
   display: flex;
   flex-direction: column;
@@ -217,7 +217,7 @@ const handleClearRoam = () => {
 .basic-tool-flyout {
   position: absolute;
   top: 0;
-  right: 54px;
+  left: 54px;
   width: 230px;
   display: flex;
   flex-direction: column;

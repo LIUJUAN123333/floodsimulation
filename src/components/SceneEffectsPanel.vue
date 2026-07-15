@@ -13,9 +13,9 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <section class="scene-effects-panel" aria-label="场景效果面板">
+  <section class="scene-effects-panel" aria-label="渲染场景效果面板">
     <div class="panel-heading">
-      <span>场景效果</span>
+      <span>渲染场景效果</span>
       <b>{{ rainstormEnabled ? '运行中' : '待开启' }}</b>
     </div>
 

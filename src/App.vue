@@ -13,7 +13,6 @@ import MonitoringPanel from './components/MonitoringPanel.vue';
 import ProjectIntroPanel from './components/ProjectIntroPanel.vue';
 import RainstormEffect from './components/RainstormEffect.vue';
 import RiverRunoffEffect from './components/RiverRunoffEffect.vue';
-import SceneEffectsPanel from './components/SceneEffectsPanel.vue';
 import {
   lastLoadedFloodJson,
   floodCellSize,
@@ -37,7 +36,6 @@ const floodLoaderRef = ref<InstanceType<typeof FloodLoader> | null>(null);
 const viewer = ref<any>(null);
 const terrainEnabled = ref(false);
 const terrainSwitching = ref(false);
-const sceneEffectsPanelVisible = ref(false);
 const rainstormEnabled = ref(false);
 const runoffRainstormActive = ref(false);
 const riverRunoffEnabled = ref(false);
@@ -68,7 +66,12 @@ const simulationPanelActive = computed(() => (
   showV0226CPanels.value &&
   activePanelId.value === 'simulation'
 ));
-const sidePanelTransitionName = computed(() => (isStandalonePanelActive.value ? 'instant-panel' : 'fade-right'));
+const showSubsystemDock = computed(() => (
+  showUI.value &&
+  panelVisible.value &&
+  activePanelId.value === 'intro'
+));
+const sidePanelTransitionName = computed(() => (activePanelId.value === 'intro' ? 'fade-right' : 'fade-left'));
 
 const openPanel = (payload: { id: string; title: string }) => {
   clearTimeout(hideTimeout);
@@ -194,10 +197,6 @@ const handleTerrainError = (error: unknown) => {
 
 const onMenuSelect = (_id: string) => {};
 
-const toggleSceneEffectsPanel = () => {
-  sceneEffectsPanelVisible.value = !sceneEffectsPanelVisible.value;
-};
-
 const toggleRainstorm = () => {
   rainstormEnabled.value = !rainstormEnabled.value;
 };
@@ -272,7 +271,6 @@ const resetFloodScene = () => {
   activePanelId.value = '';
   panelTitle.value = '';
   panelSubtitle.value = '';
-  sceneEffectsPanelVisible.value = false;
   rainstormEnabled.value = false;
   runoffRainstormActive.value = false;
   riverRunoffEnabled.value = false;
@@ -303,7 +301,14 @@ const onFlyComplete = () => { showUI.value = true; };
     <LoadingScreen :is-ready="isMapReady" :system-title="systemTitle" @loading-complete="onLoadingComplete" />
     
     <transition name="fade-top">
-      <TopBar v-show="showUI" :system-title="systemTitle" active-subsystem="flood" @open-panel="openPanel" @reset-ui="resetFloodScene" />
+      <TopBar
+        v-show="showUI"
+        :system-title="systemTitle"
+        active-subsystem="flood"
+        :show-subsystem-dock="showSubsystemDock"
+        @open-panel="openPanel"
+        @reset-ui="resetFloodScene"
+      />
     </transition>
     
     <CesiumViewer ref="cesiumViewerRef" @viewer-ready="onViewerReady" @fly-complete="onFlyComplete" @terrain-error="handleTerrainError" />
@@ -319,37 +324,6 @@ const onFlyComplete = () => { showUI.value = true; };
       @rainstorm-change="onRiverRunoffRainstormChange"
     />
 
-    <transition name="scene-effects">
-      <div v-show="showUI" class="scene-effects-entry">
-        <button
-          type="button"
-          class="scene-effects-button"
-          :class="{ active: sceneEffectsPanelVisible || effectiveRainstormEnabled || riverRunoffEnabled }"
-          title="场景效果"
-          aria-label="场景效果"
-          @click="toggleSceneEffectsPanel"
-        >
-          <svg viewBox="0 0 24 24" aria-hidden>
-            <path d="M7.5 14.5H17.2A3.3 3.3 0 0 0 17.6 8A5.4 5.4 0 0 0 7.1 9.4A2.6 2.6 0 0 0 7.5 14.5Z" />
-            <path d="M8 17.5L6.8 20M12 17.5L10.8 20M16 17.5L14.8 20" />
-          </svg>
-        </button>
-
-        <transition name="scene-effects-panel">
-          <SceneEffectsPanel
-            v-if="sceneEffectsPanelVisible"
-            class="scene-effects-flyout"
-            :rainstorm-enabled="effectiveRainstormEnabled"
-            :river-runoff-enabled="riverRunoffEnabled"
-            :flood-render-enabled="floodRenderEffectEnabled"
-            @toggle-rainstorm="toggleRainstorm"
-            @toggle-river-runoff="toggleRiverRunoff"
-            @toggle-flood-render="toggleFloodRenderEffect"
-          />
-        </transition>
-      </div>
-    </transition>
-    
     <transition name="fade-bottom">
       <div v-show="showUI" class="bottom-overlay">
         <div class="left-section">
@@ -372,12 +346,13 @@ const onFlyComplete = () => { showUI.value = true; };
       </div>
     </transition>
 
-    <!-- 2. 灾害模板右侧的高级展示面板 (与TopBar联动) -->
-    <transition name="fade-right">
+    <!-- 2. 灾害模板侧边高级展示面板 (与TopBar联动) -->
+    <transition name="fade-left">
       <TemplatePanel
         v-if="simulationPanelMounted"
         v-show="simulationPanelActive"
-        side="right"
+        class="module-panel-left"
+        side="left"
         :title="panelTitle"
         :subtitle="panelSubtitle"
       >
@@ -385,7 +360,13 @@ const onFlyComplete = () => { showUI.value = true; };
           :viewer="viewer"
           :terrain-enabled="terrainEnabled"
           :panel-active="simulationPanelActive"
+          :rainstorm-enabled="effectiveRainstormEnabled"
+          :river-runoff-enabled="riverRunoffEnabled"
+          :flood-render-enabled="floodRenderEffectEnabled"
           @menu-select="onMenuSelect"
+          @toggle-rainstorm="toggleRainstorm"
+          @toggle-river-runoff="toggleRiverRunoff"
+          @toggle-flood-render="toggleFloodRenderEffect"
         />
       </TemplatePanel>
     </transition>
@@ -394,10 +375,12 @@ const onFlyComplete = () => { showUI.value = true; };
       <TemplatePanel
         v-if="showUI && panelVisible && !isStandalonePanelActive && activePanelId !== 'simulation'"
         :class="{
+          'module-panel-right': activePanelId === 'intro',
+          'module-panel-left': activePanelId !== 'intro',
           'monitor-panel-shell': activePanelId === 'monitor',
           'info-panel-shell': activePanelId === 'intro' || activePanelId === 'help'
         }"
-        side="right"
+        :side="activePanelId === 'intro' ? 'right' : 'left'"
         :title="panelTitle"
         :subtitle="panelSubtitle"
       >
@@ -408,7 +391,7 @@ const onFlyComplete = () => { showUI.value = true; };
       </TemplatePanel>
     </transition>
 
-    <!-- 基础功能：按迁移文档改为右侧图标工具栏 -->
+    <!-- 基础功能：左侧图标工具栏 -->
     <transition name="basic-tools">
       <BasicFunctionsPanel
         v-if="showUI && panelVisible && activePanelId === 'basic'"
@@ -417,8 +400,8 @@ const onFlyComplete = () => { showUI.value = true; };
     </transition>
 
     <!-- 独立的案例演示大面板 -->
-    <transition name="fade-right">
-      <div v-if="showUI && panelVisible && activePanelId === 'demo'" class="gallery-overlay">
+    <transition name="fade-left">
+      <div v-if="showUI && panelVisible && activePanelId === 'demo'" class="gallery-overlay module-panel-left">
         <DisasterGallery @showcase="onShowcase" />
       </div>
     </transition>
@@ -524,6 +507,16 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 .v0226c-panels { position: absolute; inset: 0; pointer-events: none; z-index: 100; }
 .v0226c-panels > * { pointer-events: auto; }
 
+.module-panel-left {
+  left: 20px !important;
+  right: auto !important;
+}
+
+.module-panel-right {
+  left: auto !important;
+  right: 20px !important;
+}
+
 .gallery-overlay {
   position: absolute;
   top: 90px;
@@ -543,73 +536,6 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
   opacity: 0;
   pointer-events: none;
   overflow: hidden;
-}
-
-.scene-effects-entry {
-  position: absolute;
-  top: 50%;
-  left: 24px;
-  z-index: 10030;
-  transform: translateY(-50%);
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  pointer-events: auto;
-}
-
-.scene-effects-button {
-  width: 48px;
-  height: 48px;
-  padding: 0;
-  border: 4px solid rgba(23, 45, 87, 0.9);
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #9fb4cf;
-  background:
-    radial-gradient(circle at 50% 38%, rgba(87, 105, 134, 0.45), transparent 64%),
-    linear-gradient(180deg, rgba(31, 48, 78, 0.96), rgba(18, 32, 61, 0.98));
-  box-shadow:
-    0 0 0 1px rgba(77, 107, 158, 0.46),
-    0 10px 24px rgba(0, 0, 0, 0.34),
-    inset 0 0 12px rgba(130, 175, 224, 0.08);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.scene-effects-button svg {
-  width: 28px;
-  height: 28px;
-}
-
-.scene-effects-button path {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.scene-effects-button:hover,
-.scene-effects-button.active {
-  border-color: rgba(28, 58, 111, 0.96);
-  color: #dff8ff;
-  background:
-    radial-gradient(circle at 50% 38%, rgba(0, 229, 255, 0.26), transparent 66%),
-    linear-gradient(180deg, rgba(35, 62, 101, 0.98), rgba(19, 39, 77, 0.98));
-  box-shadow:
-    0 0 0 1px rgba(0, 229, 255, 0.5),
-    0 0 22px rgba(0, 229, 255, 0.18),
-    0 10px 24px rgba(0, 0, 0, 0.34),
-    inset 0 0 16px rgba(0, 229, 255, 0.12);
-}
-
-.scene-effects-flyout {
-  position: absolute;
-  top: 0;
-  left: 60px;
-  transform: none;
 }
 
 .info-panel-shell {
@@ -648,29 +574,7 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 .basic-tools-enter-from,
 .basic-tools-leave-to {
   opacity: 0;
-  transform: translateX(18px);
-}
-
-.scene-effects-enter-active,
-.scene-effects-leave-active {
-  transition: all 0.28s ease;
-}
-
-.scene-effects-enter-from,
-.scene-effects-leave-to {
-  opacity: 0;
-  transform: translate(-16px, -50%);
-}
-
-.scene-effects-panel-enter-active,
-.scene-effects-panel-leave-active {
-  transition: all 0.2s ease;
-}
-
-.scene-effects-panel-enter-from,
-.scene-effects-panel-leave-to {
-  opacity: 0;
-  transform: translateX(-14px);
+  transform: translateX(-18px);
 }
 
 .fade-bottom-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1) 0.9s; }
