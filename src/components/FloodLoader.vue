@@ -188,8 +188,8 @@ const formatShowcaseElapsedTime = (frameIndex: number) => {
   return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
 };
 const showcaseDockStyle = computed(() => (
-  showcaseDockPosition.top === null || showcaseDockPosition.left === null
-    ? { left: 'auto', right: '44px', top: 'auto', bottom: '48px' }
+  showcaseDockPosition.top === null
+    ? { left: `${showcaseDockPosition.left}px`, top: 'auto', bottom: 'var(--system-bottom-safe-space, 80px)' }
     : { left: `${showcaseDockPosition.left}px`, top: `${showcaseDockPosition.top}px`, bottom: 'auto' }
 ));
 const showcaseMaxFrameIndex = computed(() => Math.max(showcasePlayback.totalFrames - 1, 0));
@@ -589,13 +589,23 @@ const handleShowcaseNextFrame = () => {
   jumpShowcaseFrames(1, true);
 };
 
+const getShowcaseBottomClearance = () => {
+  const bottomBar = document.querySelector<HTMLElement>('.bottom-overlay');
+  if (!bottomBar) {
+    return 12;
+  }
+
+  const rect = bottomBar.getBoundingClientRect();
+  return rect.height > 0 ? Math.max(12, window.innerHeight - rect.top + 10) : 12;
+};
+
 const clampShowcaseDockPosition = (left: number, top: number) => {
   const dock = showcaseDockRef.value;
   const dockWidth = dock?.offsetWidth ?? 520;
   const dockHeight = dock?.offsetHeight ?? 220;
   const margin = 12;
   const maxLeft = Math.max(margin, window.innerWidth - dockWidth - margin);
-  const maxTop = Math.max(margin, window.innerHeight - dockHeight - margin);
+  const maxTop = Math.max(margin, window.innerHeight - dockHeight - getShowcaseBottomClearance());
 
   return {
     left: Math.min(Math.max(left, margin), maxLeft),
@@ -1579,8 +1589,8 @@ defineExpose({ playShowcase, resetFloodData });
 <style scoped>
 .showcase-playback-dock {
   position: fixed;
-  right: 44px;
-  bottom: 48px;
+  left: 28px;
+  bottom: var(--system-bottom-safe-space, 80px);
   z-index: 10050;
   display: flex;
   align-items: stretch;
@@ -2011,8 +2021,8 @@ defineExpose({ playShowcase, resetFloodData });
 
 @media (max-width: 640px) {
   .showcase-playback-dock {
-    right: 16px;
-    bottom: 44px;
+    left: 16px;
+    bottom: var(--system-bottom-safe-space, 80px);
     flex-direction: column;
     align-items: flex-start;
   }

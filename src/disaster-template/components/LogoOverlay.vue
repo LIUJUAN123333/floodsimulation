@@ -1,9 +1,19 @@
 <script setup lang="ts">
 import VGELogo from '../assets/icons/logo.png';
+
+const props = withDefaults(defineProps<{
+  embedded?: boolean;
+}>(), {
+  embedded: false
+});
 </script>
 
 <template>
-  <div class="logo-container">
+  <div
+    class="logo-container"
+    :class="{ embedded: props.embedded }"
+    aria-label="西南交通大学 VGE团队 版权所有"
+  >
     <div class="copyright-group">
       <div class="main-text">
         西南交通大学 <span class="highlight">VGE团队</span>
@@ -28,6 +38,15 @@ import VGELogo from '../assets/icons/logo.png';
   gap: 15px;
 }
 
+.logo-container.embedded {
+  position: relative;
+  right: auto;
+  bottom: auto;
+  z-index: auto;
+  height: 100%;
+  gap: 12px;
+}
+
 .copyright-group {
   display: flex;
   flex-direction: column;
@@ -40,8 +59,13 @@ import VGELogo from '../assets/icons/logo.png';
   font-size: 13px;
   font-weight: 500;
   color: rgba(255, 255, 255, 0.9);
-  letter-spacing: 1px;
+  letter-spacing: 0.5px;
   margin-bottom: 2px;
+}
+
+.logo-container.embedded .main-text {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.88);
 }
 
 .highlight {
@@ -54,15 +78,26 @@ import VGELogo from '../assets/icons/logo.png';
 .sub-text {
   font-size: 9px;
   color: rgba(255, 255, 255, 0.4);
-  letter-spacing: 2px;
+  letter-spacing: 1px;
   text-transform: uppercase;
   font-family: "Helvetica Neue", sans-serif;
+}
+
+.logo-container.embedded .sub-text {
+  font-size: 8px;
+  color: rgba(255, 255, 255, 0.36);
+  letter-spacing: 0.7px;
 }
 
 .divider-vertical {
   width: 1px;
   height: 28px;
   background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.3), transparent);
+}
+
+.logo-container.embedded .divider-vertical {
+  height: 24px;
+  background: linear-gradient(to bottom, transparent, rgba(0, 229, 255, 0.28), transparent);
 }
 
 .logo-img {
@@ -74,6 +109,11 @@ import VGELogo from '../assets/icons/logo.png';
   filter: drop-shadow(0 0 10px rgba(0, 212, 255, 0.2));
 }
 
+.logo-container.embedded .logo-img {
+  height: 28px;
+  filter: drop-shadow(0 0 8px rgba(0, 212, 255, 0.18));
+}
+
 .logo-container:hover .logo-img {
   transform: scale(1.1) rotate(5deg);
   filter: drop-shadow(0 0 15px rgba(0, 212, 255, 0.6));
@@ -82,9 +122,18 @@ import VGELogo from '../assets/icons/logo.png';
 
 @media (max-width: 980px) {
   .logo-container {
+    gap: 10px;
+  }
+
+  .logo-container:not(.embedded) {
     bottom: 6px;
     right: 8px;
-    gap: 10px;
+  }
+
+  .logo-container.embedded {
+    right: auto;
+    bottom: auto;
+    gap: 9px;
   }
 
   .main-text {
@@ -110,10 +159,20 @@ import VGELogo from '../assets/icons/logo.png';
     display: none;
   }
 
-  .logo-container {
+  .logo-container:not(.embedded) {
     background: rgba(8, 16, 30, 0.45);
     border-radius: 6px;
     padding: 4px 6px;
+  }
+
+  .logo-container.embedded {
+    right: auto;
+    bottom: auto;
+    gap: 0;
+  }
+
+  .logo-container.embedded .logo-img {
+    height: 24px;
   }
 }
 </style>

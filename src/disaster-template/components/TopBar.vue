@@ -32,13 +32,11 @@ const subsystemItems = computed(() => [
 ]);
 
 const navMenus = ref([
-  { id: 'intro', name: '项目简介' },
+  { id: 'intro', name: '首页' },
   { id: 'simulation', name: '仿真模拟' },
   { id: 'analysis', name: '灾情分析' },
   { id: 'demo', name: '案例演示' },
-  { id: 'monitor', name: '数据监测' },
-  { id: 'basic', name: '基础功能' },
-  { id: 'help', name: '帮助' }
+  { id: 'monitor', name: '数据监测' }
 ]);
 const activeNavMenu = ref('simulation');
 const emit = defineEmits<{
