@@ -28,7 +28,8 @@ const floodAreaM2 = computed(() => currentFloodAreaM2.value);
 <style scoped>
 .flood-area-panel {
   position: absolute;
-  top: 725px;      /* 将位置移到左上角，避开右侧的所有控制面板 */
+  top: auto;
+  bottom: var(--system-bottom-safe-space, 90px);
   right: 20px;
   z-index: 10001; /* 保持最顶层级 */
   width: 280px;

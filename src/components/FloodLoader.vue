@@ -188,7 +188,7 @@ const formatShowcaseElapsedTime = (frameIndex: number) => {
 };
 const showcaseDockStyle = computed(() => (
   showcaseDockPosition.top === null
-    ? { left: `${showcaseDockPosition.left}px`, top: 'auto', bottom: '48px' }
+    ? { left: `${showcaseDockPosition.left}px`, top: 'auto', bottom: 'var(--system-bottom-safe-space, 80px)' }
     : { left: `${showcaseDockPosition.left}px`, top: `${showcaseDockPosition.top}px`, bottom: 'auto' }
 ));
 const showcaseMaxFrameIndex = computed(() => Math.max(showcasePlayback.totalFrames - 1, 0));
@@ -599,13 +599,23 @@ const handleShowcaseNextFrame = () => {
   jumpShowcaseFrames(1, true);
 };
 
+const getShowcaseBottomClearance = () => {
+  const bottomBar = document.querySelector<HTMLElement>('.bottom-overlay');
+  if (!bottomBar) {
+    return 12;
+  }
+
+  const rect = bottomBar.getBoundingClientRect();
+  return rect.height > 0 ? Math.max(12, window.innerHeight - rect.top + 10) : 12;
+};
+
 const clampShowcaseDockPosition = (left: number, top: number) => {
   const dock = showcaseDockRef.value;
   const dockWidth = dock?.offsetWidth ?? 520;
   const dockHeight = dock?.offsetHeight ?? 220;
   const margin = 12;
   const maxLeft = Math.max(margin, window.innerWidth - dockWidth - margin);
-  const maxTop = Math.max(margin, window.innerHeight - dockHeight - margin);
+  const maxTop = Math.max(margin, window.innerHeight - dockHeight - getShowcaseBottomClearance());
 
   return {
     left: Math.min(Math.max(left, margin), maxLeft),
@@ -1588,7 +1598,7 @@ defineExpose({ playShowcase, resetFloodData });
 .showcase-playback-dock {
   position: fixed;
   left: 28px;
-  bottom: 48px;
+  bottom: var(--system-bottom-safe-space, 80px);
   z-index: 10050;
   display: flex;
   align-items: flex-end;
@@ -1995,7 +2005,7 @@ defineExpose({ playShowcase, resetFloodData });
 @media (max-width: 640px) {
   .showcase-playback-dock {
     left: 16px;
-    bottom: 44px;
+    bottom: var(--system-bottom-safe-space, 80px);
     flex-direction: column;
     align-items: flex-start;
   }
