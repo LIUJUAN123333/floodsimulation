@@ -63,7 +63,7 @@ const capabilities = [
 <template>
   <section class="intro-panel">
     <header class="intro-hero">
-      <img :src="imgXiaojiaqiao" alt="暴雨洪涝动态模拟与三维可视化系统场景" />
+      <img :src="imgXiaojiaqiao" alt="洪水动态模拟与三维可视化系统场景" />
       <div class="hero-shade" aria-hidden="true"></div>
       <div class="hero-wireframe" aria-hidden="true">
         <span class="wire-line wire-a"></span>
@@ -73,7 +73,7 @@ const capabilities = [
         <span class="wire-node node-c"></span>
       </div>
       <div class="hero-content">
-        <h2>暴雨洪涝动态模拟与三维可视化系统</h2>
+        <h2>洪水动态模拟与三维可视化系统</h2>
         <p>
           系统围绕“数据接入—模型计算—三维表达—灾情分析”的工作闭环，
           将洪水过程结果转化为可浏览、可比对、可复核的三维空间场景。

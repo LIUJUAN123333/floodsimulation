@@ -19,9 +19,12 @@ const props = withDefaults(defineProps<{
 
 type Point2D = { x: number; y: number };
 type LonLat = { lon: number; lat: number };
+type TriangleIndices = [number, number, number];
 
 const EARTH_RADIUS_METERS = 6378137;
 const BOUNDARY_OFFSET_METERS = 12;
+const ACCURACY_BOUNDARY_SOURCE_NAME = 'accuracy-boundary-visualization';
+const ACCURACY_BOUNDARY_ENTITY_TAG = 'accuracy-boundary-outline';
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const observedFileName = ref('');
@@ -37,6 +40,7 @@ const errorMessage = ref('');
 const boundariesVisible = ref(false);
 const boundaryDataSources: Cesium.GeoJsonDataSource[] = [];
 const boundaryOutlineEntities: Cesium.Entity[] = [];
+let boundaryVisualizationToken = 0;
 
 const lastAreaPoint = computed(() => {
   const series = floodAreaSeries.value
@@ -150,6 +154,7 @@ async function toggleBoundaryVisualization() {
     return;
   }
 
+  const token = ++boundaryVisualizationToken;
   try {
     const observed = await Cesium.GeoJsonDataSource.load(observedGeoJson.value, {
       clampToGround: true,
@@ -157,20 +162,12 @@ async function toggleBoundaryVisualization() {
       strokeWidth: 0,
       fill: Cesium.Color.fromCssColorString('#ff2d2d').withAlpha(0.3)
     });
-    const overlap = overlapGeoJson.value
-      ? await Cesium.GeoJsonDataSource.load(overlapGeoJson.value, {
-        clampToGround: true,
-        stroke: Cesium.Color.TRANSPARENT,
-        strokeWidth: 0,
-        fill: Cesium.Color.fromCssColorString('#ffe600').withAlpha(0.48)
-      })
-      : null;
+    observed.name = `${ACCURACY_BOUNDARY_SOURCE_NAME}:observed`;
+    if (token !== boundaryVisualizationToken || !props.viewer || !observedGeoJson.value) {
+      return;
+    }
     props.viewer.dataSources.add(observed);
     boundaryDataSources.push(observed);
-    if (overlap) {
-      props.viewer.dataSources.add(overlap);
-      boundaryDataSources.push(overlap);
-    }
     await Promise.all([
       addRaisedBoundaryOutlines(
         observedGeoJson.value,
@@ -183,13 +180,18 @@ async function toggleBoundaryVisualization() {
           overlapGeoJson.value,
           Cesium.Color.fromCssColorString('#ffe600'),
           5,
-          BOUNDARY_OFFSET_METERS + 2
+          BOUNDARY_OFFSET_METERS + 2,
+          token
         )
         : Promise.resolve()
     ]);
+    if (token !== boundaryVisualizationToken || !props.viewer || !observedGeoJson.value) {
+      clearBoundaryVisualization();
+      return;
+    }
     boundariesVisible.value = true;
     await props.viewer.flyTo(
-      overlap ? [...observed.entities.values, ...overlap.entities.values] : observed.entities.values,
+      observed.entities.values,
       { duration: 1.2 }
     );
   } catch (error) {
@@ -215,11 +217,13 @@ async function addRaisedBoundaryOutlines(
   geoJson: any,
   color: Cesium.Color,
   width: number,
-  offsetMeters: number
+  offsetMeters: number,
+  token = boundaryVisualizationToken
 ) {
   if (!props.viewer) return;
 
   for (const ring of extractOuterRings(geoJson)) {
+    if (token !== boundaryVisualizationToken || !props.viewer) return;
     const cartographics = ring.map(([lon, lat]) => Cesium.Cartographic.fromDegrees(lon, lat));
     try {
       await Cesium.sampleTerrain(props.viewer.terrainProvider, 12, cartographics);
@@ -241,7 +245,11 @@ async function addRaisedBoundaryOutlines(
       );
     });
 
+    if (token !== boundaryVisualizationToken || !props.viewer) return;
     boundaryOutlineEntities.push(props.viewer.entities.add({
+      properties: {
+        source: ACCURACY_BOUNDARY_ENTITY_TAG
+      },
       polyline: {
         positions,
         width,
@@ -257,15 +265,31 @@ async function addRaisedBoundaryOutlines(
 }
 
 function clearBoundaryVisualization() {
+  boundaryVisualizationToken += 1;
   if (props.viewer) {
     boundaryDataSources.splice(0).forEach((dataSource) => {
-      if (props.viewer?.dataSources.contains(dataSource)) {
-        props.viewer.dataSources.remove(dataSource, true);
+      props.viewer?.dataSources.remove(dataSource, true);
+    });
+
+    const dataSources = props.viewer.dataSources;
+    for (let index = dataSources.length - 1; index >= 0; index -= 1) {
+      const dataSource = dataSources.get(index);
+      if (dataSource?.name?.startsWith(ACCURACY_BOUNDARY_SOURCE_NAME)) {
+        dataSources.remove(dataSource, true);
       }
-    });
+    }
+
     boundaryOutlineEntities.splice(0).forEach((entity) => {
-      if (props.viewer?.entities.contains(entity)) props.viewer.entities.remove(entity);
+      props.viewer?.entities.remove(entity);
     });
+
+    const entities = props.viewer.entities.values;
+    for (let index = entities.length - 1; index >= 0; index -= 1) {
+      const entity = entities[index];
+      if (entity.properties?.source?.getValue?.() === ACCURACY_BOUNDARY_ENTITY_TAG) {
+        props.viewer.entities.remove(entity);
+      }
+    }
   } else {
     boundaryDataSources.length = 0;
     boundaryOutlineEntities.length = 0;
@@ -329,11 +353,14 @@ function calculateSimulatedOverlap(floodData: any, observed: any) {
   });
 
   let overlapArea = 0;
-  const features: any[] = [];
+  const overlapTriangles: TriangleIndices[] = [];
   for (let index = 0; index + 2 < triangles.length; index += 3) {
-    const a = vertices[triangles[index]];
-    const b = vertices[triangles[index + 1]];
-    const c = vertices[triangles[index + 2]];
+    const aIndex = triangles[index];
+    const bIndex = triangles[index + 1];
+    const cIndex = triangles[index + 2];
+    const a = vertices[aIndex];
+    const b = vertices[bIndex];
+    const c = vertices[cIndex];
     if (!a || !b || !c) continue;
 
     const centroid = {
@@ -343,30 +370,118 @@ function calculateSimulatedOverlap(floodData: any, observed: any) {
     if (!isPointInGeoJson(centroid, observed)) continue;
 
     overlapArea += triangleAreaM2(project(a), project(b), project(c));
-    features.push({
-      type: 'Feature',
-      properties: { kind: 'overlap' },
-      geometry: {
-        type: 'Polygon',
-        coordinates: [[
-          [a.lon, a.lat],
-          [b.lon, b.lat],
-          [c.lon, c.lat],
-          [a.lon, a.lat]
-        ]]
-      }
-    });
+    overlapTriangles.push([aIndex, bIndex, cIndex]);
   }
 
   return {
     areaM2: Math.min(overlapArea, simulatedAreaM2.value, observedAreaM2.value),
-    geoJson: features.length
-      ? {
-        type: 'FeatureCollection',
-        features
-      }
-      : null
+    geoJson: buildSmoothedBoundaryGeoJson(vertices, overlapTriangles)
   };
+}
+
+function buildSmoothedBoundaryGeoJson(vertices: LonLat[], triangles: TriangleIndices[]) {
+  if (!triangles.length) return null;
+
+  const edgeCounts = new Map<string, { count: number; from: number; to: number }>();
+  const addEdge = (from: number, to: number) => {
+    const key = from < to ? `${from}:${to}` : `${to}:${from}`;
+    const existing = edgeCounts.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      edgeCounts.set(key, { count: 1, from, to });
+    }
+  };
+
+  triangles.forEach(([a, b, c]) => {
+    addEdge(a, b);
+    addEdge(b, c);
+    addEdge(c, a);
+  });
+
+  const boundaryEdges = Array.from(edgeCounts.values()).filter((edge) => edge.count === 1);
+  const adjacency = new Map<number, number[]>();
+  boundaryEdges.forEach(({ from, to }) => {
+    adjacency.set(from, [...(adjacency.get(from) ?? []), to]);
+    adjacency.set(to, [...(adjacency.get(to) ?? []), from]);
+  });
+
+  const usedEdges = new Set<string>();
+  const edgeKey = (from: number, to: number) => (from < to ? `${from}:${to}` : `${to}:${from}`);
+  const rings: Array<Array<[number, number]>> = [];
+
+  for (const { from, to } of boundaryEdges) {
+    const firstKey = edgeKey(from, to);
+    if (usedEdges.has(firstKey)) continue;
+
+    const ringIndices = [from, to];
+    usedEdges.add(firstKey);
+    let previous = from;
+    let current = to;
+
+    for (let guard = 0; guard < boundaryEdges.length + 5; guard += 1) {
+      const neighbors = adjacency.get(current) ?? [];
+      const next = neighbors.find((neighbor) => neighbor !== previous && !usedEdges.has(edgeKey(current, neighbor)));
+      if (next === undefined) break;
+
+      usedEdges.add(edgeKey(current, next));
+      if (next === ringIndices[0]) {
+        ringIndices.push(next);
+        break;
+      }
+
+      ringIndices.push(next);
+      previous = current;
+      current = next;
+    }
+
+    if (ringIndices.length >= 4 && ringIndices[0] === ringIndices[ringIndices.length - 1]) {
+      const ring = ringIndices
+        .map((vertexIndex) => vertices[vertexIndex])
+        .filter(Boolean)
+        .map((point) => [point.lon, point.lat] as [number, number]);
+      const smoothed = smoothClosedRing(ring, 2);
+      if (smoothed.length >= 4) rings.push(smoothed);
+    }
+  }
+
+  if (!rings.length) return null;
+
+  return {
+    type: 'FeatureCollection',
+    features: rings.map((ring) => ({
+      type: 'Feature',
+      properties: { kind: 'overlap-boundary' },
+      geometry: {
+        type: 'Polygon',
+        coordinates: [ring]
+      }
+    }))
+  };
+}
+
+function smoothClosedRing(ring: Array<[number, number]>, iterations: number) {
+  let points = ring.slice(0, -1);
+  if (points.length < 3) return ring;
+
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const nextPoints: Array<[number, number]> = [];
+    for (let index = 0; index < points.length; index += 1) {
+      const current = points[index];
+      const next = points[(index + 1) % points.length];
+      nextPoints.push([
+        current[0] * 0.75 + next[0] * 0.25,
+        current[1] * 0.75 + next[1] * 0.25
+      ]);
+      nextPoints.push([
+        current[0] * 0.25 + next[0] * 0.75,
+        current[1] * 0.25 + next[1] * 0.75
+      ]);
+    }
+    points = nextPoints;
+  }
+
+  return [...points, points[0]];
 }
 
 function calculateGeoJsonAreaM2(geoJson: any) {

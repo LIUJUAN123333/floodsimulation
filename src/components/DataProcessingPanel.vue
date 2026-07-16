@@ -1408,14 +1408,6 @@ const handleExportLineTerrainDataTXT = () => {
   window.exportLineTerrainDataTXT?.();
 };
 
-const handleCheckAllTilesExist = () => {
-  window.checkAllTilesExist?.();
-};
-
-const handleCalculateAllIntermediatePoints = () => {
-  window.calculateAllIntermediatePoints?.();
-};
-
 watch(
   () => props.viewer,
   async (viewer) => {
@@ -1599,18 +1591,8 @@ onBeforeUnmount(() => {
             <p class="text-muted">暂无点位</p>
           </div>
           <div style="margin-top: 10px;">
-            <button type="button" class="btn btn-secondary" @click="handleExportLineTerrainDataTXT">
+            <button type="button" class="btn btn-primary" @click="handleExportLineTerrainDataTXT">
               导出线段地形数据（TXT）
-            </button>
-          </div>
-          <div style="margin-top: 10px;">
-            <button type="button" class="btn btn-secondary" @click="handleCheckAllTilesExist">
-              检查地形瓦片
-            </button>
-          </div>
-          <div style="margin-top: 10px;">
-            <button type="button" class="btn btn-secondary" @click="handleCalculateAllIntermediatePoints">
-              计算地形网格信息
             </button>
           </div>
         </div>
@@ -1925,7 +1907,7 @@ onBeforeUnmount(() => {
 .mesh-playback-dock {
   pointer-events: auto;
   position: fixed;
-  right: 172px;
+  right: 136px;
   bottom: 48px;
   width: min(400px, calc(100vw - 48px));
   height: 224px;
@@ -2115,7 +2097,7 @@ onBeforeUnmount(() => {
 .mesh-depth-legend {
   pointer-events: auto;
   position: fixed;
-  right: 44px;
+  right: 20px;
   bottom: 48px;
   width: 104px;
   height: 224px;

@@ -69,10 +69,10 @@ const statusText: Record<StationStatus, string> = {
 
 type MonitorGroupId = 'status' | 'trends' | 'stationAlarm';
 
-const monitorGroups = ref<Array<{ id: MonitorGroupId; title: string; expanded: boolean }>>([
-  { id: 'status', title: '运行状态', expanded: false },
-  { id: 'trends', title: '监测趋势', expanded: false },
-  { id: 'stationAlarm', title: '站点告警', expanded: false }
+const monitorGroups = ref<Array<{ id: MonitorGroupId; title: string; expanded: boolean; visible: boolean }>>([
+  { id: 'status', title: '运行状态', expanded: true, visible: true },
+  { id: 'trends', title: '监测趋势', expanded: true, visible: true },
+  { id: 'stationAlarm', title: '站点告警', expanded: true, visible: true }
 ]);
 
 const isMonitorGroupExpanded = (id: MonitorGroupId) => (
@@ -85,47 +85,29 @@ const toggleMonitorGroup = (id: MonitorGroupId) => {
     group.expanded = !group.expanded;
   }
 };
+
+const isMonitorGroupVisible = (id: MonitorGroupId) => (
+  monitorGroups.value.find((group) => group.id === id)?.visible ?? false
+);
+
+const closeMonitorGroup = (id: MonitorGroupId) => {
+  const group = monitorGroups.value.find((item) => item.id === id);
+  if (group) {
+    group.visible = false;
+  }
+};
 </script>
 
 <template>
   <section class="monitor-panel">
-    <div class="monitor-group">
-      <button type="button" class="monitor-group-header" @click="toggleMonitorGroup('status')">
-        <span class="monitor-group-arrow" :class="{ expanded: isMonitorGroupExpanded('status') }">▶</span>
-        <span>运行状态</span>
-      </button>
-      <div v-show="isMonitorGroupExpanded('status')" class="monitor-group-content">
-        <FpsWidget mode="inline" />
-    <div class="summary-grid">
-      <div class="summary-card">
-        <span class="summary-label">在线站点</span>
-        <strong>{{ onlineCount }}</strong>
-        <em>座</em>
-      </div>
-      <div class="summary-card danger">
-        <span class="summary-label">超警站点</span>
-        <strong>{{ warningCount }}</strong>
-        <em>座</em>
-      </div>
-      <div class="summary-card">
-        <span class="summary-label">平均雨强</span>
-        <strong>{{ avgRain.toFixed(1) }}</strong>
-        <em>mm/h</em>
-      </div>
-      <div class="summary-card">
-        <span class="summary-label">最大流量</span>
-        <strong>{{ maxFlow }}</strong>
-        <em>m³/s</em>
-      </div>
-    </div>
-      </div>
-    </div>
-
-    <div class="monitor-group">
-      <button type="button" class="monitor-group-header" @click="toggleMonitorGroup('trends')">
+    <transition name="side-float-left" appear>
+    <div v-if="isMonitorGroupVisible('trends')" class="monitor-group monitor-trends" :class="{ expanded: isMonitorGroupExpanded('trends') }">
+      <div class="monitor-group-header" role="button" tabindex="0" @click="toggleMonitorGroup('trends')">
         <span class="monitor-group-arrow" :class="{ expanded: isMonitorGroupExpanded('trends') }">▶</span>
         <span>监测趋势</span>
-      </button>
+        <span class="monitor-group-spacer"></span>
+        <button type="button" class="monitor-close-btn" aria-label="关闭监测趋势面板" title="关闭" @click.stop="closeMonitorGroup('trends')">×</button>
+      </div>
       <div v-show="isMonitorGroupExpanded('trends')" class="monitor-group-content">
     <div class="chart-card">
       <div class="card-heading">
@@ -171,12 +153,16 @@ const toggleMonitorGroup = (id: MonitorGroupId) => {
     </div>
       </div>
     </div>
+    </transition>
 
-    <div class="monitor-group">
-      <button type="button" class="monitor-group-header" @click="toggleMonitorGroup('stationAlarm')">
+    <transition name="side-float-left" appear>
+    <div v-if="isMonitorGroupVisible('stationAlarm')" class="monitor-group monitor-station-alarm" :class="{ expanded: isMonitorGroupExpanded('stationAlarm') }">
+      <div class="monitor-group-header" role="button" tabindex="0" @click="toggleMonitorGroup('stationAlarm')">
         <span class="monitor-group-arrow" :class="{ expanded: isMonitorGroupExpanded('stationAlarm') }">▶</span>
         <span>站点告警</span>
-      </button>
+        <span class="monitor-group-spacer"></span>
+        <button type="button" class="monitor-close-btn" aria-label="关闭站点告警面板" title="关闭" @click.stop="closeMonitorGroup('stationAlarm')">×</button>
+      </div>
       <div v-show="isMonitorGroupExpanded('stationAlarm')" class="monitor-group-content">
     <div class="station-card">
       <div class="card-heading">
@@ -210,57 +196,211 @@ const toggleMonitorGroup = (id: MonitorGroupId) => {
     </div>
       </div>
     </div>
+    </transition>
+
+    <transition name="side-float-right" appear>
+    <div v-if="isMonitorGroupVisible('status')" class="monitor-group monitor-status" :class="{ expanded: isMonitorGroupExpanded('status') }">
+      <div class="monitor-group-header" role="button" tabindex="0" @click="toggleMonitorGroup('status')">
+        <span class="monitor-group-arrow" :class="{ expanded: isMonitorGroupExpanded('status') }">▶</span>
+        <span>运行状态</span>
+        <span class="monitor-group-spacer"></span>
+        <button type="button" class="monitor-close-btn" aria-label="关闭运行状态面板" title="关闭" @click.stop="closeMonitorGroup('status')">×</button>
+      </div>
+      <div v-show="isMonitorGroupExpanded('status')" class="monitor-group-content">
+        <FpsWidget mode="inline" />
+    <div class="summary-grid">
+      <div class="summary-card">
+        <span class="summary-label">在线站点</span>
+        <strong>{{ onlineCount }}</strong>
+        <em>座</em>
+      </div>
+      <div class="summary-card danger">
+        <span class="summary-label">超警站点</span>
+        <strong>{{ warningCount }}</strong>
+        <em>座</em>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">平均雨强</span>
+        <strong>{{ avgRain.toFixed(1) }}</strong>
+        <em>mm/h</em>
+      </div>
+      <div class="summary-card">
+        <span class="summary-label">最大流量</span>
+        <strong>{{ maxFlow }}</strong>
+        <em>m³/s</em>
+      </div>
+    </div>
+      </div>
+    </div>
+    </transition>
   </section>
 </template>
 
 <style scoped>
 .monitor-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  position: absolute;
+  inset: 0;
+  z-index: 910;
+  display: grid;
+  grid-template-columns: minmax(320px, 360px) minmax(360px, 1fr) minmax(320px, 360px);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-items: start;
+  gap: 14px 32px;
+  padding: 90px 20px calc(var(--system-bottom-safe-space, 54px) + 24px);
+  pointer-events: none;
 }
 
 .monitor-group {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  overflow: hidden;
+  width: 100%;
+  max-height: calc(100vh - 150px);
+  border: 1px solid var(--sys-border-color, rgba(0, 229, 255, 0.4));
+  border-radius: 8px;
+  background: var(--sys-glass-bg, rgba(13, 27, 49, 0.7));
+  box-shadow:
+    inset 0 0 20px var(--sys-border-color-light, rgba(0, 229, 255, 0.1)),
+    0 8px 32px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+}
+
+.monitor-status {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  max-height: calc(100vh - var(--system-bottom-safe-space, 54px) - 122px);
+}
+
+.monitor-trends {
+  grid-column: 1;
+  grid-row: 1;
+  max-height: 40vh;
+}
+
+.monitor-station-alarm {
+  grid-column: 1;
+  grid-row: 2;
+  max-height: 40vh;
+}
+
+.side-float-left-enter-active,
+.side-float-left-leave-active,
+.side-float-right-enter-active,
+.side-float-right-leave-active {
+  will-change: opacity, transform;
+}
+
+.side-float-left-enter-active {
+  transition: opacity 1s cubic-bezier(0.4, 0, 0.2, 1) 0.3s, transform 1s cubic-bezier(0.4, 0, 0.2, 1) 0.3s !important;
+}
+
+.side-float-left-leave-active {
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.side-float-left-enter-from,
+.side-float-left-leave-to {
+  opacity: 0;
+  transform: translateX(-50px);
+}
+
+.side-float-right-enter-active {
+  transition: opacity 1s cubic-bezier(0.4, 0, 0.2, 1) 0.6s, transform 1s cubic-bezier(0.4, 0, 0.2, 1) 0.6s !important;
+}
+
+.side-float-right-leave-active {
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.side-float-right-enter-from,
+.side-float-right-leave-to {
+  opacity: 0;
+  transform: translateX(50px);
 }
 
 .monitor-group-header {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
+  gap: 10px;
   width: 100%;
-  padding: 10px;
-  border: 1px solid var(--sys-border-color-light, rgba(0, 229, 255, 0.1));
-  border-radius: 4px;
+  min-height: 58px;
+  padding: 14px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--sys-border-color, rgba(0, 229, 255, 0.4));
   color: #ffffff;
-  background-color: var(--sys-bg-glow, rgba(0, 229, 255, 0.15));
+  background: linear-gradient(90deg, var(--sys-bg-glow, rgba(0, 229, 255, 0.15)) 0%, transparent 100%);
   cursor: pointer;
   font-size: 16px;
-  font-weight: bold;
+  font-weight: 800;
   text-align: left;
-  transition: all 0.3s ease;
+  letter-spacing: 0;
+  transition: background 0.24s ease;
 }
 
 .monitor-group-header:hover {
-  background-color: var(--sys-bg-glow-active, rgba(0, 229, 255, 0.3));
+  background: linear-gradient(90deg, var(--sys-bg-glow-active, rgba(0, 229, 255, 0.3)) 0%, transparent 100%);
+}
+
+.monitor-group-header::before {
+  content: '';
+  width: 4px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--sys-theme-color, #00e5ff);
+  box-shadow: var(--sys-text-glow, 0 0 8px rgba(0, 229, 255, 0.5));
 }
 
 .monitor-group-arrow {
-  margin-right: 8px;
-  color: #00aeff;
-  font-size: 10px;
-  transition: transform 0.2s;
+  flex: 0 0 auto;
+  color: #31d8ff;
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.2s ease, color 0.2s ease;
 }
 
 .monitor-group-arrow.expanded {
   transform: rotate(90deg);
+  color: #62f1ff;
+}
+
+.monitor-group-spacer {
+  flex: 1 1 auto;
+}
+
+.monitor-close-btn {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
+  color: #bfeeff;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.monitor-close-btn:hover {
+  color: #ffffff;
+  border-color: rgba(255, 92, 92, 0.52);
+  background: rgba(255, 82, 82, 0.24);
 }
 
 .monitor-group-content {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
+  overflow-y: auto;
 }
 
 .summary-grid {
@@ -526,6 +666,14 @@ const toggleMonitorGroup = (id: MonitorGroupId) => {
   line-height: 1.55;
 }
 
+@media (max-width: 1280px) {
+  .monitor-panel {
+    grid-template-columns: minmax(300px, 340px) minmax(260px, 1fr) minmax(300px, 340px);
+    gap: 14px 22px;
+    padding-inline: 20px;
+  }
+}
+
 @media (max-width: 1180px) {
   .station-row {
     grid-template-columns: 1fr;
@@ -534,6 +682,28 @@ const toggleMonitorGroup = (id: MonitorGroupId) => {
 
   .status-badge {
     width: fit-content;
+  }
+}
+
+@media (max-width: 980px) {
+  .monitor-panel {
+    inset: 92px 12px var(--system-bottom-safe-space, 54px);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 0;
+    overflow-y: auto;
+    pointer-events: auto;
+  }
+
+  .monitor-group,
+  .monitor-status,
+  .monitor-trends,
+  .monitor-station-alarm {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    max-height: none;
   }
 }
 </style>

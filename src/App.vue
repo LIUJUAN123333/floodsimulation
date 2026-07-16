@@ -40,7 +40,6 @@ const cursorCoordinates = ref({
   lat: '0.000000',
   height: '0.00'
 });
-const sceneEffectsPanelVisible = ref(false);
 const rainstormEnabled = ref(false);
 const runoffRainstormActive = ref(false);
 const riverRunoffEnabled = ref(false);
@@ -429,21 +428,32 @@ const onFlyComplete = () => { showUI.value = true; };
 
     <transition :name="sidePanelTransitionName">
       <TemplatePanel
-        v-if="showUI && panelVisible && !isStandalonePanelActive && activePanelId !== 'simulation'"
+        v-if="showUI && panelVisible && !isStandalonePanelActive && activePanelId !== 'simulation' && activePanelId !== 'analysis' && activePanelId !== 'monitor'"
         :class="{
           'module-panel-right': activePanelId === 'intro',
           'module-panel-left': activePanelId !== 'intro',
-          'monitor-panel-shell': activePanelId === 'monitor',
           'info-panel-shell': activePanelId === 'intro'
         }"
         :side="activePanelId === 'intro' ? 'right' : 'left'"
         :title="panelTitle"
         :subtitle="panelSubtitle"
       >
-        <FloodAnalysisPanel v-if="activePanelId === 'analysis'" :viewer="viewer" />
-        <ProjectIntroPanel v-else-if="activePanelId === 'intro'" />
-        <MonitoringPanel v-else-if="activePanelId === 'monitor'" :viewer="viewer" />
+        <ProjectIntroPanel v-if="activePanelId === 'intro'" />
       </TemplatePanel>
+    </transition>
+
+    <transition name="instant-panel">
+      <FloodAnalysisPanel
+        v-if="showUI && panelVisible && activePanelId === 'analysis'"
+        :viewer="viewer"
+      />
+    </transition>
+
+    <transition name="instant-panel">
+      <MonitoringPanel
+        v-if="showUI && panelVisible && activePanelId === 'monitor'"
+        :viewer="viewer"
+      />
     </transition>
 
     <!-- 独立的案例演示大面板 -->
@@ -824,31 +834,17 @@ body { overflow: hidden; font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
 .fade-right-leave-active { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
 .fade-right-enter-from, .fade-right-leave-to { opacity: 0; transform: translateX(50px); }
 
+.side-float-left-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1) 0.3s !important; }
+.side-float-left-leave-active { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important; }
+.side-float-left-enter-from, .side-float-left-leave-to { opacity: 0; transform: translateX(-50px); }
+
+.side-float-right-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1) 0.6s !important; }
+.side-float-right-leave-active { transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important; }
+.side-float-right-enter-from, .side-float-right-leave-to { opacity: 0; transform: translateX(50px); }
+
 .instant-panel-enter-active,
 .instant-panel-leave-active {
   transition: none !important;
-}
-
-.scene-effects-enter-active,
-.scene-effects-leave-active {
-  transition: all 0.28s ease;
-}
-
-.scene-effects-enter-from,
-.scene-effects-leave-to {
-  opacity: 0;
-  transform: translate(-16px, -50%);
-}
-
-.scene-effects-panel-enter-active,
-.scene-effects-panel-leave-active {
-  transition: all 0.2s ease;
-}
-
-.scene-effects-panel-enter-from,
-.scene-effects-panel-leave-to {
-  opacity: 0;
-  transform: translateX(-14px);
 }
 
 .fade-bottom-enter-active { transition: all 1s cubic-bezier(0.4, 0, 0.2, 1) 0.9s; }

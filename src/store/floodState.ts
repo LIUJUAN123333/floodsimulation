@@ -305,48 +305,9 @@ const sampleFloodDepthFromMonitorPoint = (
     return { depthM: 0, mode: 'outside' };
   }
 
-  const canUseCachedSampler = (
-    point.meshVertexCount === depths.length &&
-    point.meshFaceCount === faces.length
-  );
-
-  if (
-    canUseCachedSampler &&
-    point.sampleMode === 'triangle' &&
-    point.sampleVertices &&
-    point.sampleWeights
-  ) {
-    const [index0, index1, index2] = point.sampleVertices;
-    const [weight0, weight1, weight2] = point.sampleWeights;
-    const depth0 = Number(depths[index0]) || 0;
-    const depth1 = Number(depths[index1]) || 0;
-    const depth2 = Number(depths[index2]) || 0;
-    return {
-      depthM: Math.max(0, depth0 * weight0 + depth1 * weight1 + depth2 * weight2),
-      mode: 'triangle',
-      sampleVertices: point.sampleVertices,
-      sampleWeights: point.sampleWeights,
-      meshVertexCount: depths.length,
-      meshFaceCount: faces.length
-    };
-  }
-
-  if (
-    canUseCachedSampler &&
-    point.sampleMode === 'nearest' &&
-    typeof point.nearestIndex === 'number' &&
-    point.nearestIndex >= 0 &&
-    point.nearestIndex < depths.length
-  ) {
-    return {
-      depthM: Math.max(0, Number(depths[point.nearestIndex]) || 0),
-      mode: 'nearest',
-      nearestIndex: point.nearestIndex,
-      meshVertexCount: depths.length,
-      meshFaceCount: faces.length
-    };
-  }
-
+  // Mesh frames can rebuild vertices/faces, so vertex indices are not always
+  // stable across time. Re-sample by coordinate each frame to keep the monitor
+  // point fixed in space instead of fixed to a changing vertex id.
   return sampleFloodDepthAtGridPoint(jsonData, point.gridX, point.gridY);
 };
 

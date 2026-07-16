@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import * as Cesium from 'cesium';
 import DrawTriangleMesh from '../js/DrawTriangleMesh';
 import AccuracyEvaluationPanel from './AccuracyEvaluationPanel.vue';
@@ -182,6 +182,10 @@ const roadLayerShown = ref(false);
 const roadLayerMessage = ref('');
 const roadStats = ref<RoadStats>({ total: 0, flooded: 0, safe: 0 });
 const roadDataSource = ref<Cesium.CustomDataSource | null>(null);
+const uploadedBuildingLayerName = ref('');
+const uploadedRoadLayerName = ref('');
+const buildingUploadInputRef = ref<HTMLInputElement | null>(null);
+const roadUploadInputRef = ref<HTMLInputElement | null>(null);
 let roadFeatureEntityRecords: RoadFeatureEntityRecord[] = [];
 let pickHandler: Cesium.ScreenSpaceEventHandler | null = null;
 let depthMarker: Cesium.Entity | null = null;
@@ -193,9 +197,8 @@ let isPanelDisposed = false;
 const activeLayerConfig = computed<CaseLayerConfig | null>(() => (
   CASE_LAYER_CONFIGS[currentShowcaseCaseId.value ?? ''] ?? null
 ));
-const hasSelectedCaseLayer = computed(() => activeLayerConfig.value !== null);
-const activeBuildingLayerLabel = computed(() => activeLayerConfig.value?.buildingLabel ?? '未选择案例');
-const activeRoadLayerLabel = computed(() => activeLayerConfig.value?.roadLabel ?? '未选择案例');
+const activeBuildingLayerLabel = computed(() => uploadedBuildingLayerName.value || activeLayerConfig.value?.buildingLabel || '未选择案例');
+const activeRoadLayerLabel = computed(() => uploadedRoadLayerName.value || activeLayerConfig.value?.roadLabel || '未选择案例');
 
 const sortedDepthSeries = computed(() => (
   floodPointDepthSeries.value
@@ -212,11 +215,13 @@ const hasDepthPoint = computed(() => selectedFloodDepthPoint.value !== null);
 const hasDepthData = computed(() => sortedDepthSeries.value.length > 0);
 type AnalysisGroupId = 'depth' | 'assets' | 'accuracy';
 
-const analysisGroups = ref<Array<{ id: AnalysisGroupId; title: string; expanded: boolean }>>([
-  { id: 'depth', title: '点位水深分析', expanded: false },
-  { id: 'assets', title: '承灾体淹没分析', expanded: false },
-  { id: 'accuracy', title: '精度评价', expanded: false }
+const analysisGroups = ref<Array<{ id: AnalysisGroupId; title: string; expanded: boolean; visible: boolean }>>([
+  { id: 'depth', title: '点位水深分析', expanded: true, visible: true },
+  { id: 'assets', title: '承灾体淹没分析', expanded: true, visible: true },
+  { id: 'accuracy', title: '精度评价', expanded: true, visible: true }
 ]);
+const panelReady = ref(false);
+let panelReadyFrame = 0;
 
 const isAnalysisGroupExpanded = (id: AnalysisGroupId) => (
   analysisGroups.value.find((group) => group.id === id)?.expanded ?? false
@@ -228,8 +233,40 @@ const toggleAnalysisGroup = (id: AnalysisGroupId) => {
     group.expanded = !group.expanded;
   }
 };
-const maxDepthM = computed(() => Math.max(0, ...sortedDepthSeries.value.map((point) => point.depthM)));
+
+const isAnalysisGroupVisible = (id: AnalysisGroupId) => (
+  analysisGroups.value.find((group) => group.id === id)?.visible ?? false
+);
+
+const closeAnalysisGroup = (id: AnalysisGroupId) => {
+  const group = analysisGroups.value.find((item) => item.id === id);
+  if (group) {
+    group.visible = false;
+  }
+};
 const latestDepthM = computed(() => latestDepthPoint.value?.depthM ?? currentFloodPointDepthM.value);
+
+const smoothDepthSeries = computed(() => {
+  const series = sortedDepthSeries.value;
+  if (series.length < 4) {
+    return series;
+  }
+
+  const radius = 2;
+  return series.map((point, index) => {
+    const window = series.slice(
+      Math.max(0, index - radius),
+      Math.min(series.length, index + radius + 1)
+    );
+    const averageDepth = window.reduce((sum, item) => sum + item.depthM, 0) / window.length;
+    return {
+      frame: point.frame,
+      depthM: averageDepth
+    };
+  });
+});
+
+const maxSmoothedDepthM = computed(() => Math.max(0, ...smoothDepthSeries.value.map((point) => point.depthM)));
 
 const formatDepth = (depthM: number) => {
   if (!Number.isFinite(depthM)) {
@@ -321,13 +358,13 @@ const buildYTicks = (maxValue: number, formatter: (value: number) => string) => 
 };
 
 const depthChartPoints = computed(() => buildChartPoints(
-  sortedDepthSeries.value.map((point) => ({ frame: point.frame, value: point.depthM })),
-  maxDepthM.value
+  smoothDepthSeries.value.map((point) => ({ frame: point.frame, value: point.depthM })),
+  maxSmoothedDepthM.value
 ));
 const depthLinePoints = computed(() => buildLine(depthChartPoints.value));
 const depthFillPoints = computed(() => buildFill(depthChartPoints.value, depthLinePoints.value));
 const depthDotPoints = computed(() => sampleDots(depthChartPoints.value));
-const depthYTicks = computed(() => buildYTicks(maxDepthM.value, formatDepth));
+const depthYTicks = computed(() => buildYTicks(maxSmoothedDepthM.value, formatDepth));
 const depthXTicks = computed(() => buildXTicks(sortedDepthSeries.value));
 
 const depthSampleStatus = computed(() => {
@@ -369,7 +406,7 @@ const buildingToggleLabel = computed(() => {
   }
 
   if (!buildingDataSource.value) {
-    return activeLayerConfig.value ? `加载${activeLayerConfig.value.buildingLabel}` : '请先选择案例';
+    return activeLayerConfig.value ? `加载${activeLayerConfig.value.buildingLabel}` : '上传建筑物';
   }
 
   return buildingLayerShown.value ? `隐藏${activeBuildingLayerLabel.value}` : `显示${activeBuildingLayerLabel.value}`;
@@ -393,7 +430,7 @@ const roadToggleLabel = computed(() => {
   }
 
   if (!roadDataSource.value) {
-    return activeLayerConfig.value ? `加载${activeLayerConfig.value.roadLabel}` : '请先选择案例';
+    return activeLayerConfig.value ? `加载${activeLayerConfig.value.roadLabel}` : '上传道路';
   }
 
   return roadLayerShown.value ? `隐藏${activeRoadLayerLabel.value}` : `显示${activeRoadLayerLabel.value}`;
@@ -763,6 +800,24 @@ const isRoadFeatureInCameraBounds = (feature: RoadFeature, cameraBounds: Buildin
   return featureBounds ? boundsIntersect(featureBounds, cameraBounds) : false;
 };
 
+const getFloodSamplePoint = (longitude: number, latitude: number, floodJson: any) => {
+  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
+    return null;
+  }
+
+  if (isCachedMeshFloodData(floodJson)) {
+    return { x: longitude, y: latitude };
+  }
+
+  const worldPosition = Cesium.Cartesian3.fromDegrees(longitude, latitude);
+  return DrawTriangleMesh.worldToFloodGrid(worldPosition);
+};
+
+const hasUsableFloodFrame = (floodJson: any) => (
+  Boolean(floodJson) &&
+  (isCachedMeshFloodData(floodJson) || Boolean(DrawTriangleMesh.getCurrentModelMatrix()))
+);
+
 const analyzeBuildingFootprintFlooding = (feature: BuildingFootprintFeature, floodJson: any) => {
   const polygons = getPolygonRings(feature.geometry);
   let maxDepthM = 0;
@@ -779,8 +834,7 @@ const analyzeBuildingFootprintFlooding = (feature: BuildingFootprintFeature, flo
       return;
     }
 
-    const worldPosition = Cesium.Cartesian3.fromDegrees(centroid.longitude, centroid.latitude);
-    const gridPoint = DrawTriangleMesh.worldToFloodGrid(worldPosition);
+    const gridPoint = getFloodSamplePoint(centroid.longitude, centroid.latitude, floodJson);
     if (!gridPoint) {
       return;
     }
@@ -930,8 +984,8 @@ const analyzeBuildingFlooding = async () => {
     return;
   }
 
-  if (!floodJson || !DrawTriangleMesh.getCurrentModelMatrix()) {
-    buildingLayerMessage.value = '请先播放洪水案例，播放完成后再进行淹没分析';
+  if (!hasUsableFloodFrame(floodJson)) {
+    buildingLayerMessage.value = '请先播放案例或加载渲染洪水数据，再进行淹没分析';
     return;
   }
 
@@ -983,8 +1037,7 @@ const analyzeRoadFeatureFlooding = (feature: RoadFeature, floodJson: any) => {
         return;
       }
 
-      const worldPosition = Cesium.Cartesian3.fromDegrees(longitude, latitude);
-      const gridPoint = DrawTriangleMesh.worldToFloodGrid(worldPosition);
+      const gridPoint = getFloodSamplePoint(longitude, latitude, floodJson);
       if (!gridPoint) {
         return;
       }
@@ -1012,8 +1065,8 @@ const analyzeRoadFlooding = async () => {
     return;
   }
 
-  if (!floodJson || !DrawTriangleMesh.getCurrentModelMatrix()) {
-    roadLayerMessage.value = '请先播放洪水案例，播放完成后再进行道路淹没分析';
+  if (!hasUsableFloodFrame(floodJson)) {
+    roadLayerMessage.value = '请先播放案例或加载渲染洪水数据，再进行道路淹没分析';
     return;
   }
 
@@ -1051,6 +1104,160 @@ const analyzeRoadFlooding = async () => {
   } finally {
     roadLayerLoading.value = false;
   }
+};
+
+const readGeoJsonFile = async <T,>(file: File): Promise<T> => {
+  const text = await file.text();
+  return JSON.parse(text) as T;
+};
+
+const isGeoJsonFile = (file: File) => file.name.toLowerCase().endsWith('.geojson');
+
+const handleBuildingGeoJsonUpload = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) {
+    return;
+  }
+
+  if (!isGeoJsonFile(file)) {
+    buildingLayerMessage.value = '请上传 .geojson 格式的建筑物文件';
+    return;
+  }
+
+  const viewer = props.viewer;
+  if (!viewer || buildingLayerLoading.value) {
+    buildingLayerMessage.value = viewer ? '建筑图层正在加载中' : '地图尚未准备好';
+    return;
+  }
+
+  buildingLayerLoading.value = true;
+  await showBuildingLoadMessage(`正在读取${file.name}...`);
+
+  try {
+    destroyOsmBuildings();
+    const geojson = await readGeoJsonFile<BuildingFootprintCollection>(file);
+    const dataSource = new Cesium.CustomDataSource(`uploaded_buildings_${Date.now()}`);
+    let polygonCount = 0;
+    const featureEntityRecords: BuildingFeatureEntityRecord[] = [];
+
+    geojson.features?.forEach((feature) => {
+      const entities: Cesium.Entity[] = [];
+      getPolygonRings(feature.geometry).forEach((polygon) => {
+        const entity = addBuildingLayerEntity(dataSource, feature, polygon);
+        if (entity) {
+          entities.push(entity);
+          polygonCount += 1;
+        }
+      });
+      if (entities.length) {
+        featureEntityRecords.push({ feature, entities });
+      }
+    });
+
+    if (!featureEntityRecords.length) {
+      throw new Error('未识别到有效建筑物 Polygon/MultiPolygon');
+    }
+
+    previousDepthTestAgainstTerrain = viewer.scene.globe.depthTestAgainstTerrain;
+    viewer.scene.globe.depthTestAgainstTerrain = false;
+    await viewer.dataSources.add(dataSource);
+    buildingDataSource.value = dataSource;
+    buildingFeatureEntityRecords = featureEntityRecords;
+    buildingLayerViewer = viewer;
+    buildingLayerShown.value = true;
+    uploadedBuildingLayerName.value = file.name;
+    buildingStats.value = { total: 0, flooded: 0, safe: 0 };
+    buildingLayerMessage.value = `已上传建筑物：${featureEntityRecords.length} 个要素，${polygonCount} 个面`;
+    viewer.scene.requestRender();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '建筑物 GeoJSON 上传失败';
+    buildingLayerMessage.value = message;
+  } finally {
+    buildingLayerLoading.value = false;
+  }
+};
+
+const handleRoadGeoJsonUpload = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (!file) {
+    return;
+  }
+
+  if (!isGeoJsonFile(file)) {
+    roadLayerMessage.value = '请上传 .geojson 格式的道路文件';
+    return;
+  }
+
+  const viewer = props.viewer;
+  if (!viewer || roadLayerLoading.value) {
+    roadLayerMessage.value = viewer ? '道路图层正在加载中' : '地图尚未准备好';
+    return;
+  }
+
+  roadLayerLoading.value = true;
+  await showRoadLoadMessage(`正在读取${file.name}...`);
+
+  try {
+    destroyRoadLayer();
+    const geojson = await readGeoJsonFile<RoadCollection>(file);
+    const dataSource = new Cesium.CustomDataSource(`uploaded_roads_${Date.now()}`);
+    let lineCount = 0;
+    const featureEntityRecords: RoadFeatureEntityRecord[] = [];
+
+    geojson.features?.forEach((feature) => {
+      const entities: Cesium.Entity[] = [];
+      getRoadLineStrings(feature.geometry).forEach((line) => {
+        const entity = addRoadLayerEntity(dataSource, feature, line);
+        if (entity) {
+          entities.push(entity);
+          lineCount += 1;
+        }
+      });
+      if (entities.length) {
+        featureEntityRecords.push({ feature, entities });
+      }
+    });
+
+    if (!featureEntityRecords.length) {
+      throw new Error('未识别到有效道路 LineString/MultiLineString');
+    }
+
+    await viewer.dataSources.add(dataSource);
+    roadDataSource.value = dataSource;
+    roadFeatureEntityRecords = featureEntityRecords;
+    roadLayerShown.value = true;
+    uploadedRoadLayerName.value = file.name;
+    roadStats.value = { total: 0, flooded: 0, safe: 0 };
+    roadLayerMessage.value = `已上传道路：${featureEntityRecords.length} 个要素，${lineCount} 条线段`;
+    viewer.scene.requestRender();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '道路 GeoJSON 上传失败';
+    roadLayerMessage.value = message;
+  } finally {
+    roadLayerLoading.value = false;
+  }
+};
+
+const handleBuildingLayerAction = () => {
+  if (activeLayerConfig.value || buildingDataSource.value) {
+    void toggleOsmBuildings();
+    return;
+  }
+
+  buildingUploadInputRef.value?.click();
+};
+
+const handleRoadLayerAction = () => {
+  if (activeLayerConfig.value || roadDataSource.value) {
+    void toggleRoadLayer();
+    return;
+  }
+
+  roadUploadInputRef.value?.click();
 };
 
 const toggleOsmBuildings = async () => {
@@ -1133,6 +1340,7 @@ const toggleOsmBuildings = async () => {
     buildingFeatureEntityRecords = featureEntityRecords;
     buildingLayerViewer = viewer;
     buildingLayerShown.value = true;
+    uploadedBuildingLayerName.value = '';
     buildingStats.value = { total: 0, flooded: 0, safe: 0 };
     buildingLayerMessage.value = `${layerConfig.buildingLabel}已加载：当前视野内 ${featureEntityRecords.length} 栋、${polygonCount} 个立体轮廓`;
     viewer.scene.requestRender();
@@ -1218,6 +1426,7 @@ const toggleRoadLayer = async () => {
     roadDataSource.value = dataSource;
     roadFeatureEntityRecords = featureEntityRecords;
     roadLayerShown.value = true;
+    uploadedRoadLayerName.value = '';
     roadStats.value = { total: 0, flooded: 0, safe: 0 };
     roadLayerMessage.value = `${layerConfig.roadLabel}已加载：当前视野内 ${featureEntityRecords.length} 条道路、${lineCount} 条线段`;
     viewer.scene.requestRender();
@@ -1239,6 +1448,7 @@ const destroyRoadLayer = () => {
 
   roadDataSource.value = null;
   roadFeatureEntityRecords = [];
+  uploadedRoadLayerName.value = '';
   roadLayerShown.value = false;
   roadLayerLoading.value = false;
   roadStats.value = { total: 0, flooded: 0, safe: 0 };
@@ -1258,6 +1468,7 @@ const destroyOsmBuildings = () => {
   previousDepthTestAgainstTerrain = null;
   buildingDataSource.value = null;
   buildingFeatureEntityRecords = [];
+  uploadedBuildingLayerName.value = '';
   buildingLayerViewer = null;
   buildingLayerShown.value = false;
   buildingLayerLoading.value = false;
@@ -1279,8 +1490,17 @@ watch(
     roadLayerMessage.value = '';
   }
 );
+onMounted(() => {
+  panelReadyFrame = window.requestAnimationFrame(() => {
+    panelReady.value = true;
+  });
+});
+
 onBeforeUnmount(() => {
   isPanelDisposed = true;
+  if (panelReadyFrame) {
+    window.cancelAnimationFrame(panelReadyFrame);
+  }
   stopDepthPick();
   removeDepthMarker();
   destroyOsmBuildings();
@@ -1290,11 +1510,14 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="flood-analysis-panel">
-    <div class="analysis-group">
-      <button type="button" class="analysis-group-header" @click="toggleAnalysisGroup('depth')">
+    <transition name="side-float-left" appear>
+    <div v-if="panelReady && isAnalysisGroupVisible('depth')" class="analysis-group analysis-depth" :class="{ expanded: isAnalysisGroupExpanded('depth') }">
+      <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('depth')">
         <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('depth') }">▶</span>
         <span>点位水深分析</span>
-      </button>
+        <span class="analysis-group-spacer"></span>
+        <button type="button" class="analysis-close-btn" aria-label="关闭点位水深分析面板" title="关闭" @click.stop="closeAnalysisGroup('depth')">×</button>
+      </div>
       <div v-show="isAnalysisGroupExpanded('depth')" class="analysis-group-content">
     <div class="analysis-block depth-block">
       <div class="block-heading">
@@ -1349,12 +1572,16 @@ onBeforeUnmount(() => {
 
       </div>
     </div>
+    </transition>
 
-    <div class="analysis-group">
-      <button type="button" class="analysis-group-header" @click="toggleAnalysisGroup('assets')">
+    <transition name="side-float-left" appear>
+    <div v-if="panelReady && isAnalysisGroupVisible('assets')" class="analysis-group analysis-assets" :class="{ expanded: isAnalysisGroupExpanded('assets') }">
+      <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('assets')">
         <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('assets') }">▶</span>
         <span>承灾体淹没分析</span>
-      </button>
+        <span class="analysis-group-spacer"></span>
+        <button type="button" class="analysis-close-btn" aria-label="关闭承灾体淹没分析面板" title="关闭" @click.stop="closeAnalysisGroup('assets')">×</button>
+      </div>
       <div v-show="isAnalysisGroupExpanded('assets')" class="analysis-group-content">
     <div class="analysis-block building-block">
       <div class="block-heading">
@@ -1364,7 +1591,8 @@ onBeforeUnmount(() => {
       <p class="point-message layer-source">当前图层：{{ activeBuildingLayerLabel }}</p>
 
       <div class="point-toolbar building-toolbar">
-        <button type="button" class="point-btn primary" :disabled="!hasSelectedCaseLayer || buildingLayerLoading" @click="toggleOsmBuildings">
+        <input ref="buildingUploadInputRef" class="asset-file-input-hidden" type="file" accept=".geojson" :disabled="buildingLayerLoading" @change="handleBuildingGeoJsonUpload" />
+        <button type="button" class="point-btn primary" :disabled="buildingLayerLoading" @click="handleBuildingLayerAction">
           {{ buildingToggleLabel }}
         </button>
         <button type="button" class="point-btn" :disabled="!buildingLayerShown || buildingLayerLoading" @click="refreshBuildingColors()">
@@ -1389,7 +1617,8 @@ onBeforeUnmount(() => {
       <p class="point-message layer-source">当前图层：{{ activeRoadLayerLabel }}</p>
 
       <div class="point-toolbar building-toolbar">
-        <button type="button" class="point-btn primary" :disabled="!hasSelectedCaseLayer || roadLayerLoading" @click="toggleRoadLayer">
+        <input ref="roadUploadInputRef" class="asset-file-input-hidden" type="file" accept=".geojson" :disabled="roadLayerLoading" @change="handleRoadGeoJsonUpload" />
+        <button type="button" class="point-btn primary" :disabled="roadLayerLoading" @click="handleRoadLayerAction">
           {{ roadToggleLabel }}
         </button>
         <button type="button" class="point-btn" :disabled="!roadLayerShown || roadLayerLoading" @click="refreshRoadColors()">
@@ -1408,67 +1637,217 @@ onBeforeUnmount(() => {
 
       </div>
     </div>
+    </transition>
 
-    <div class="analysis-group">
-      <button type="button" class="analysis-group-header" @click="toggleAnalysisGroup('accuracy')">
+    <transition name="side-float-right" appear>
+    <div v-if="panelReady && isAnalysisGroupVisible('accuracy')" class="analysis-group analysis-accuracy" :class="{ expanded: isAnalysisGroupExpanded('accuracy') }">
+      <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('accuracy')">
         <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('accuracy') }">▶</span>
         <span>精度评价</span>
-      </button>
+        <span class="analysis-group-spacer"></span>
+        <button type="button" class="analysis-close-btn" aria-label="关闭精度评价面板" title="关闭" @click.stop="closeAnalysisGroup('accuracy')">×</button>
+      </div>
       <div v-show="isAnalysisGroupExpanded('accuracy')" class="analysis-group-content">
     <AccuracyEvaluationPanel :viewer="viewer" />
       </div>
     </div>
+    </transition>
   </section>
 </template>
 
 <style scoped>
 .flood-analysis-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  position: absolute;
+  inset: 0;
+  z-index: 910;
+  display: grid;
+  grid-template-columns: minmax(320px, 360px) minmax(360px, 1fr) minmax(320px, 360px);
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-items: start;
+  gap: 14px 32px;
+  padding: 90px 20px calc(var(--system-bottom-safe-space, 54px) + 24px);
+  pointer-events: none;
 }
 
 .analysis-group {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  overflow: hidden;
+  width: 100%;
+  max-height: calc(100vh - 150px);
+  border: 1px solid var(--sys-border-color, rgba(0, 229, 255, 0.4));
+  border-radius: 8px;
+  background: var(--sys-glass-bg, rgba(13, 27, 49, 0.7));
+  box-shadow:
+    inset 0 0 20px var(--sys-border-color-light, rgba(0, 229, 255, 0.1)),
+    0 8px 32px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  transition: border-color 0.24s ease, background 0.24s ease, box-shadow 0.24s ease;
+}
+
+.analysis-depth {
+  grid-column: 1;
+  grid-row: 1;
+  max-height: 38vh;
+}
+
+.analysis-assets {
+  grid-column: 1;
+  grid-row: 2;
+  max-height: none;
+}
+
+.analysis-accuracy {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+  max-height: calc(100vh - var(--system-bottom-safe-space, 54px) - 122px);
+}
+
+.side-float-left-enter-active,
+.side-float-left-leave-active,
+.side-float-right-enter-active,
+.side-float-right-leave-active {
+  will-change: opacity, transform;
+}
+
+.side-float-left-enter-active {
+  transition: opacity 1s cubic-bezier(0.4, 0, 0.2, 1) 0.3s, transform 1s cubic-bezier(0.4, 0, 0.2, 1) 0.3s !important;
+}
+
+.side-float-left-leave-active {
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.side-float-left-enter-from,
+.side-float-left-leave-to {
+  opacity: 0;
+  transform: translateX(-50px);
+}
+
+.side-float-right-enter-active {
+  transition: opacity 1s cubic-bezier(0.4, 0, 0.2, 1) 0.6s, transform 1s cubic-bezier(0.4, 0, 0.2, 1) 0.6s !important;
+}
+
+.side-float-right-leave-active {
+  transition: opacity 0.4s cubic-bezier(0.4, 0, 0.2, 1), transform 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.side-float-right-enter-from,
+.side-float-right-leave-to {
+  opacity: 0;
+  transform: translateX(50px);
+}
+
+.analysis-group::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: linear-gradient(120deg, rgba(255, 255, 255, 0.05), transparent 42%);
+  opacity: 0.28;
+}
+
+.analysis-group.expanded {
+  border-color: var(--sys-border-color, rgba(0, 229, 255, 0.4));
+  background: var(--sys-glass-bg, rgba(13, 27, 49, 0.7));
+  box-shadow:
+    inset 0 0 20px var(--sys-border-color-light, rgba(0, 229, 255, 0.1)),
+    0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
 .analysis-group-header {
+  position: relative;
+  z-index: 1;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
+  gap: 10px;
   width: 100%;
-  padding: 10px;
-  border: 1px solid var(--sys-border-color-light, rgba(0, 229, 255, 0.1));
-  border-radius: 4px;
+  min-height: 58px;
+  padding: 14px 16px;
+  border: 0;
+  border-bottom: 1px solid var(--sys-border-color, rgba(0, 229, 255, 0.4));
   color: #ffffff;
-  background-color: var(--sys-bg-glow, rgba(0, 229, 255, 0.15));
+  background: linear-gradient(90deg, var(--sys-bg-glow, rgba(0, 229, 255, 0.15)) 0%, transparent 100%);
   cursor: pointer;
   font-size: 16px;
-  font-weight: bold;
+  font-weight: 800;
   text-align: left;
-  transition: all 0.3s ease;
+  letter-spacing: 0;
+  transition: background 0.24s ease, color 0.24s ease;
 }
 
 .analysis-group-header:hover {
-  background-color: var(--sys-bg-glow-active, rgba(0, 229, 255, 0.3));
+  background: linear-gradient(90deg, var(--sys-bg-glow-active, rgba(0, 229, 255, 0.3)) 0%, transparent 100%);
+}
+
+.analysis-group-header::before {
+  content: '';
+  width: 4px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--sys-theme-color, #00e5ff);
+  box-shadow: var(--sys-text-glow, 0 0 8px rgba(0, 229, 255, 0.5));
+  opacity: 1;
+  transform: scaleY(1);
+  transition: opacity 0.24s ease, transform 0.24s ease;
+}
+
+.analysis-group.expanded .analysis-group-header::before {
+  opacity: 1;
+  transform: scaleY(1);
 }
 
 .analysis-group-arrow {
-  margin-right: 8px;
-  color: #00aeff;
-  font-size: 10px;
-  transition: transform 0.2s;
+  flex: 0 0 auto;
+  color: #31d8ff;
+  font-size: 12px;
+  line-height: 1;
+  transition: transform 0.2s ease, color 0.2s ease;
 }
 
 .analysis-group-arrow.expanded {
   transform: rotate(90deg);
+  color: #62f1ff;
+}
+
+.analysis-group-spacer {
+  flex: 1 1 auto;
+}
+
+.analysis-close-btn {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
+  color: #bfeeff;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.analysis-close-btn:hover {
+  color: #ffffff;
+  border-color: rgba(255, 92, 92, 0.52);
+  background: rgba(255, 82, 82, 0.24);
 }
 
 .analysis-group-content {
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
+  padding: 12px;
+  min-height: 0;
+  background: transparent;
+  overflow-y: auto;
 }
 
 .metric-grid {
@@ -1527,7 +1906,8 @@ onBeforeUnmount(() => {
 }
 
 .analysis-block {
-  padding: 10px;
+  padding: 12px;
+  background: rgba(0, 229, 255, 0.055);
 }
 
 .block-heading {
@@ -1676,6 +2056,14 @@ onBeforeUnmount(() => {
   cursor: not-allowed;
 }
 
+.asset-file-input-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .point-summary {
   display: grid;
   grid-template-columns: auto 1fr auto 0.85fr;
@@ -1767,5 +2155,35 @@ onBeforeUnmount(() => {
   font-size: 13px;
   text-align: right;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 1280px) {
+  .flood-analysis-panel {
+    grid-template-columns: minmax(300px, 340px) minmax(260px, 1fr) minmax(300px, 340px);
+    gap: 14px 22px;
+    padding-inline: 20px;
+  }
+}
+
+@media (max-width: 980px) {
+  .flood-analysis-panel {
+    inset: 92px 12px var(--system-bottom-safe-space, 54px);
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 0;
+    overflow-y: auto;
+    pointer-events: auto;
+  }
+
+  .analysis-group,
+  .analysis-depth,
+  .analysis-assets,
+  .analysis-accuracy {
+    position: relative;
+    inset: auto;
+    width: 100%;
+    max-height: none;
+  }
 }
 </style>

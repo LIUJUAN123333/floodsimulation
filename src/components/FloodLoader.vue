@@ -188,9 +188,9 @@ const formatShowcaseElapsedTime = (frameIndex: number) => {
   return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
 };
 const showcaseDockStyle = computed(() => (
-  showcaseDockPosition.top === null
-    ? { left: `${showcaseDockPosition.left}px`, top: 'auto', bottom: 'var(--system-bottom-safe-space, 80px)' }
-    : { left: `${showcaseDockPosition.left}px`, top: `${showcaseDockPosition.top}px`, bottom: 'auto' }
+  showcaseDockPosition.top === null || showcaseDockPosition.left === null
+    ? { left: 'auto', right: '20px', top: 'auto', bottom: '48px' }
+    : { left: `${showcaseDockPosition.left}px`, right: 'auto', top: `${showcaseDockPosition.top}px`, bottom: 'auto' }
 ));
 const showcaseMaxFrameIndex = computed(() => Math.max(showcasePlayback.totalFrames - 1, 0));
 const showcaseTimelineIndex = computed(() => (
@@ -1589,8 +1589,8 @@ defineExpose({ playShowcase, resetFloodData });
 <style scoped>
 .showcase-playback-dock {
   position: fixed;
-  left: 28px;
-  bottom: var(--system-bottom-safe-space, 80px);
+  right: 20px;
+  bottom: 48px;
   z-index: 10050;
   display: flex;
   align-items: stretch;
@@ -2021,8 +2021,8 @@ defineExpose({ playShowcase, resetFloodData });
 
 @media (max-width: 640px) {
   .showcase-playback-dock {
-    left: 16px;
-    bottom: var(--system-bottom-safe-space, 80px);
+    right: 16px;
+    bottom: 44px;
     flex-direction: column;
     align-items: flex-start;
   }
