@@ -12,6 +12,8 @@ import MonitoringPanel from './components/MonitoringPanel.vue';
 import ProjectIntroPanel from './components/ProjectIntroPanel.vue';
 import RainstormEffect from './components/RainstormEffect.vue';
 import RiverRunoffEffect from './components/RiverRunoffEffect.vue';
+import type { RoamUiState } from './types/roam';
+import { createInitialRoamState } from './types/roam';
 import {
   lastLoadedFloodJson,
   floodCellSize,
@@ -35,12 +37,12 @@ const floodLoaderRef = ref<InstanceType<typeof FloodLoader> | null>(null);
 const viewer = ref<any>(null);
 const terrainEnabled = ref(false);
 const terrainSwitching = ref(false);
+const roamState = ref<RoamUiState>(createInitialRoamState());
 const cursorCoordinates = ref({
   lon: '0.000000',
   lat: '0.000000',
   height: '0.00'
 });
-const sceneEffectsPanelVisible = ref(false);
 const rainstormEnabled = ref(false);
 const runoffRainstormActive = ref(false);
 const riverRunoffEnabled = ref(false);
@@ -129,6 +131,10 @@ const onViewerReady = (readyViewer: any) => {
 
 const onCoordinatesChange = (coordinates: { lon: string; lat: string; height: string }) => {
   cursorCoordinates.value = coordinates;
+};
+
+const onRoamStateChange = (state: RoamUiState) => {
+  roamState.value = state;
 };
 
 const SAFE_TERRAIN_MAX_LEVEL = 13;
@@ -334,6 +340,7 @@ const onFlyComplete = () => { showUI.value = true; };
       @fly-complete="onFlyComplete"
       @terrain-error="handleTerrainError"
       @coordinates-change="onCoordinatesChange"
+      @roam-state-change="onRoamStateChange"
     />
     <FloodLoader v-if="viewer" ref="floodLoaderRef" class="showcase-flood-loader" :viewer="viewer" />
     <FloodAreaFloatingPanel v-if="showUI" />
@@ -369,7 +376,7 @@ const onFlyComplete = () => { showUI.value = true; };
             <span class="slider"></span>
           </label>
           <span class="bottom-divider" aria-hidden="true"></span>
-          <BasicFunctionsPanel :cesium-viewer-ref="cesiumViewerRef" />
+          <BasicFunctionsPanel :cesium-viewer-ref="cesiumViewerRef" :roam-state="roamState" />
         </div>
 
         <div class="bottom-coordinate-zone" aria-label="当前鼠标坐标" aria-live="polite">

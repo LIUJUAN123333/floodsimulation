@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref, watch } from 'vue';
+import type { RoamUiState } from '../types/roam';
 
 const props = defineProps<{
   cesiumViewerRef?: any;
+  roamState?: RoamUiState;
 }>();
 
 const activeBasicFlyout = ref<'fly' | 'measure' | 'roam' | null>(null);
@@ -12,9 +14,51 @@ const flyHeight = ref('20000');
 const roamSpeed = ref('80');
 const roamHeight = ref('120');
 const basicStatus = ref('选择一个基础工具后，可直接在三维视图中交互。');
-const roamPaused = ref(false);
+const roamViewMode = ref<'third' | 'first'>('third');
+const roamFileInput = ref<HTMLInputElement | null>(null);
+const roamPhase = computed(() => props.roamState?.phase ?? 'idle');
+const roamPaused = computed(() => roamPhase.value === 'paused');
+const roamBusy = computed(() => ['building', 'transitioning'].includes(roamPhase.value));
+const roamRunning = computed(() => roamPhase.value === 'running');
+const roamRouteReady = computed(() => props.roamState?.routeReady ?? false);
+const roamCanStart = computed(() => roamRouteReady.value && !roamBusy.value && !roamRunning.value);
+const roamCanPause = computed(() => ['running', 'paused'].includes(roamPhase.value));
+const roamCanStop = computed(() => ['running', 'paused', 'transitioning'].includes(roamPhase.value));
+const roamCanEditRoute = computed(() => !['building', 'transitioning', 'running', 'paused'].includes(roamPhase.value));
+const roamProgressPercent = computed(() => Math.round((props.roamState?.progress ?? 0) * 100));
+const roamDistanceText = computed(() => {
+  const distance = props.roamState?.distance ?? 0;
+  const total = props.roamState?.totalDistance ?? 0;
+  const format = (value: number) => value >= 1000 ? `${(value / 1000).toFixed(2)} km` : `${value.toFixed(0)} m`;
+  return `${format(distance)} / ${format(total)}`;
+});
+const roamPhaseText = computed(() => {
+  const labels: Record<RoamUiState['phase'], string> = {
+    idle: '待规划',
+    drawing: '路径拾取',
+    building: '轨迹构建',
+    ready: '航线就绪',
+    transitioning: '视角过渡',
+    running: '漫游进行',
+    paused: '已暂停',
+    stopped: '已停止',
+    completed: '已完成',
+    error: '异常'
+  };
+  return labels[roamPhase.value];
+});
 
 type MeasureMode = 'distance' | 'height' | 'area';
+
+watch(
+  () => props.roamState,
+  (state) => {
+    if (!state) return;
+    roamViewMode.value = state.mode;
+    if (state.message) basicStatus.value = state.message;
+  },
+  { immediate: true }
+);
 
 const toggleBasicFlyout = (panel: 'fly' | 'measure' | 'roam') => {
   activeBasicFlyout.value = activeBasicFlyout.value === panel ? null : panel;
@@ -63,32 +107,57 @@ const handleClearMeasurements = () => {
 };
 
 const handlePickRoamPath = () => {
-  props.cesiumViewerRef?.startPickRoamPath?.();
-  roamPaused.value = false;
-  basicStatus.value = '正在拾取漫游路径：左键添加路径点，右键结束。';
+  const message = props.cesiumViewerRef?.startPickRoamPath?.();
+  basicStatus.value = message || '路径拾取已开启。';
 };
 
-const handleStartRoam = () => {
+const handleSetRoamMode = async (mode: 'third' | 'first') => {
+  roamViewMode.value = mode;
+  const message = await props.cesiumViewerRef?.setRoamViewMode?.(mode);
+  basicStatus.value = message || (mode === 'third' ? '已切换为第三人称跟随视角。' : '已切换为第一人称沉浸视角。');
+};
+
+const handleImportRoamRoute = () => {
+  roamFileInput.value?.click();
+};
+
+const handleRoamFileChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  try {
+    const message = await props.cesiumViewerRef?.loadRoamShpRoute?.(file);
+    basicStatus.value = message || '已导入航线，可开始漫游。';
+  } catch (error) {
+    basicStatus.value = error instanceof Error ? error.message : '航线导入失败，请检查 shp 文件坐标。';
+  } finally {
+    input.value = '';
+  }
+};
+
+const handleStartRoam = async () => {
   const speed = Number(roamSpeed.value);
   const height = Number(roamHeight.value);
   if (!Number.isFinite(speed) || speed <= 0 || !Number.isFinite(height)) {
     basicStatus.value = '请输入有效的漫游速度和高度。';
     return;
   }
-  props.cesiumViewerRef?.startRoam?.(speed, height);
-  roamPaused.value = false;
-  basicStatus.value = '漫游已开始。';
+  const message = await props.cesiumViewerRef?.startRoam?.(speed, height, roamViewMode.value);
+  basicStatus.value = message || '漫游已开始。';
 };
 
 const handleToggleRoamPause = () => {
-  props.cesiumViewerRef?.toggleRoamPause?.();
-  roamPaused.value = !roamPaused.value;
-  basicStatus.value = roamPaused.value ? '漫游已暂停。' : '漫游继续。';
+  const message = props.cesiumViewerRef?.toggleRoamPause?.();
+  basicStatus.value = message || '漫游状态已更新。';
+};
+
+const handleStopRoam = () => {
+  const message = props.cesiumViewerRef?.stopRoam?.();
+  basicStatus.value = message || '漫游已停止，已释放相机控制。';
 };
 
 const handleClearRoam = () => {
   props.cesiumViewerRef?.clearRoam?.();
-  roamPaused.value = false;
   basicStatus.value = '已清除漫游路径。';
 };
 </script>
@@ -137,15 +206,53 @@ const handleClearRoam = () => {
       </template>
 
       <template v-if="activeBasicFlyout === 'roam'">
-        <div class="flyout-title">漫游</div>
-        <div class="tool-input-grid">
-          <label><span>速度(m/s)</span><input v-model="roamSpeed" class="basic-input" type="number" min="1" step="10" /></label>
-          <label><span>高度(m)</span><input v-model="roamHeight" class="basic-input" type="number" step="10" /></label>
+        <div class="flyout-title">智能路径漫游</div>
+        <div class="roam-mode-switch" aria-label="漫游视角模式">
+          <button
+            type="button"
+            class="mode-chip"
+            :class="{ active: roamViewMode === 'third' }"
+            :disabled="roamBusy"
+            @click="handleSetRoamMode('third')"
+          >
+            第三人称
+          </button>
+          <button
+            type="button"
+            class="mode-chip"
+            :class="{ active: roamViewMode === 'first' }"
+            :disabled="roamBusy"
+            @click="handleSetRoamMode('first')"
+          >
+            第一人称
+          </button>
         </div>
-        <button class="sys-btn workflow-btn" @click="handlePickRoamPath">拾取路径</button>
-        <button class="sys-btn workflow-btn" @click="handleStartRoam">开始漫游</button>
-        <button class="sys-btn workflow-btn" @click="handleToggleRoamPause">{{ roamPaused ? '继续' : '暂停' }}</button>
-        <button class="sys-btn workflow-btn" @click="handleClearRoam">清漫游</button>
+        <div class="tool-input-grid">
+          <label><span>速度(m/s)</span><input v-model="roamSpeed" class="basic-input" type="number" min="1" step="10" :disabled="roamBusy || roamRunning" /></label>
+          <label title="相机飞行轨迹相对于当前 DEM 地表的垂直高度"><span>相对DEM高度(m)</span><input v-model="roamHeight" class="basic-input" type="number" min="1" step="10" :disabled="roamBusy || roamRunning" /></label>
+        </div>
+        <div class="roam-telemetry" :class="`phase-${roamPhase}`">
+          <div class="roam-telemetry-head">
+            <span class="roam-phase"><i aria-hidden="true"></i>{{ roamPhaseText }}</span>
+            <span class="roam-distance">{{ roamDistanceText }}</span>
+          </div>
+          <div class="roam-progress-track" role="progressbar" :aria-valuenow="roamProgressPercent" aria-valuemin="0" aria-valuemax="100">
+            <span :style="{ width: `${roamProgressPercent}%` }"></span>
+          </div>
+          <div class="roam-telemetry-foot">
+            <span>{{ roamViewMode === 'first' ? '第一人称' : '第三人称' }}</span>
+            <span>{{ roamProgressPercent }}%</span>
+          </div>
+        </div>
+        <div class="roam-action-grid">
+          <button class="sys-btn workflow-btn" :disabled="!roamCanEditRoute" title="在三维场景中设置路径节点" @click="handlePickRoamPath">拾取路径</button>
+          <button class="sys-btn workflow-btn" :disabled="!roamCanEditRoute" title="导入 WGS84 线状 shp 航线" @click="handleImportRoamRoute">导入航线</button>
+          <button class="sys-btn workflow-btn primary" :disabled="!roamCanStart" @click="handleStartRoam">{{ roamBusy ? '准备中' : '开始漫游' }}</button>
+          <button class="sys-btn workflow-btn" :disabled="!roamCanPause" @click="handleToggleRoamPause">{{ roamPaused ? '继续' : '暂停' }}</button>
+          <button class="sys-btn workflow-btn danger-soft" :disabled="!roamCanStop" @click="handleStopRoam">停止</button>
+        </div>
+        <button class="sys-btn workflow-btn" :disabled="roamBusy || roamRunning" @click="handleClearRoam">清除路径</button>
+        <input ref="roamFileInput" class="file-input-hidden" type="file" accept=".shp" @change="handleRoamFileChange" />
       </template>
 
       <div class="basic-flyout-status">{{ basicStatus }}</div>
@@ -302,6 +409,7 @@ const handleClearRoam = () => {
 
 .flyout-roam {
   --flyout-offset: 114px;
+  width: min(318px, calc(100vw - 24px));
 }
 
 .basic-tool-flyout::after {
@@ -407,6 +515,159 @@ const handleClearRoam = () => {
 
 .workflow-btn {
   width: 100%;
+}
+
+.roam-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 4px;
+  border: 1px solid rgba(0, 229, 255, 0.12);
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg, rgba(0, 229, 255, 0.045), transparent),
+    rgba(0, 0, 0, 0.13);
+}
+
+.mode-chip {
+  min-height: 28px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: #94b7c3;
+  background: transparent;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.mode-chip:hover,
+.mode-chip.active {
+  border-color: rgba(0, 229, 255, 0.42);
+  color: #f4feff;
+  background: linear-gradient(180deg, rgba(0, 229, 255, 0.16), rgba(0, 97, 123, 0.22));
+  box-shadow: inset 0 0 10px rgba(0, 229, 255, 0.08), 0 0 12px rgba(0, 229, 255, 0.06);
+}
+
+.mode-chip:disabled,
+.sys-btn:disabled,
+.basic-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+  transform: none;
+  box-shadow: none;
+}
+
+.roam-telemetry {
+  display: grid;
+  gap: 6px;
+  padding: 8px 9px;
+  border: 1px solid rgba(92, 210, 230, 0.16);
+  border-radius: 6px;
+  background: rgba(0, 9, 17, 0.26);
+}
+
+.roam-telemetry-head,
+.roam-telemetry-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.roam-phase {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #d8f8fb;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.roam-phase i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #7ddce8;
+  box-shadow: 0 0 8px rgba(125, 220, 232, 0.72);
+}
+
+.phase-running .roam-phase i,
+.phase-transitioning .roam-phase i,
+.phase-building .roam-phase i {
+  animation: roam-status-pulse 1.15s ease-in-out infinite;
+}
+
+.phase-ready .roam-phase i,
+.phase-completed .roam-phase i {
+  background: #73efb8;
+  box-shadow: 0 0 8px rgba(115, 239, 184, 0.72);
+}
+
+.phase-error .roam-phase i {
+  background: #ff9a72;
+  box-shadow: 0 0 8px rgba(255, 125, 92, 0.72);
+}
+
+.roam-distance {
+  color: #87aeb9;
+  font-family: "Cascadia Mono", "Courier New", monospace;
+  font-size: 10px;
+}
+
+.roam-progress-track {
+  height: 3px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: rgba(103, 177, 194, 0.14);
+}
+
+.roam-progress-track span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #42c6d8, #78efb8);
+  box-shadow: 0 0 8px rgba(92, 224, 207, 0.48);
+  transition: width 0.12s linear;
+}
+
+.roam-telemetry-foot {
+  color: #7398a4;
+  font-size: 10px;
+}
+
+.roam-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.sys-btn.primary {
+  border-color: rgba(108, 242, 190, 0.42);
+  color: #edfff8;
+  background: linear-gradient(180deg, rgba(59, 203, 161, 0.45), rgba(10, 89, 86, 0.58));
+}
+
+.sys-btn.danger-soft {
+  border-color: rgba(255, 152, 102, 0.38);
+  color: #fff0e8;
+  background: linear-gradient(180deg, rgba(188, 88, 56, 0.36), rgba(91, 37, 30, 0.46));
+}
+
+.file-input-hidden {
+  display: none;
+}
+
+@keyframes roam-status-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.86);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
 }
 
 .basic-flyout-status {
