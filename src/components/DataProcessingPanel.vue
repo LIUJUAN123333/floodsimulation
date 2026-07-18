@@ -9,8 +9,10 @@ import {
   currentFloodPrimitive,
   floodPlaybackToken,
   lastLoadedFloodJson,
+  meshRenderCloseToken,
   recordFloodPointDepth,
   recordMeshAreaPoint,
+  requestFloodAreaPanelOpen,
   resetFloodAreaSeries,
   resetFloodPointDepthSeries
 } from '../store/floodState';
@@ -141,6 +143,11 @@ const hideMeshPlaybackDock = () => {
 };
 
 const hideMeshDepthLegend = () => {
+  meshDepthLegendVisible.value = false;
+};
+
+const hideMeshFloatingPanels = () => {
+  meshPlaybackDockVisible.value = false;
   meshDepthLegendVisible.value = false;
 };
 
@@ -708,6 +715,7 @@ const loadMeshAnimationFolder = async (folder: string) => {
     resetFloodAreaSeries();
     resetFloodPointDepthSeries();
     await renderMeshFrame(0, true);
+    requestFloodAreaPanelOpen();
     showMeshPlaybackDock();
     void preloadMeshFrames(false);
   } catch (error) {
@@ -874,6 +882,15 @@ const clearMeshFlood = () => {
   lastLoadedFloodJson.value = null;
   meshStatus.value = '洪水图层已清空';
 };
+
+watch(meshRenderCloseToken, () => {
+  clearMeshFlood();
+});
+
+defineExpose({
+  clearMeshFlood,
+  hideMeshFloatingPanels
+});
 
 const boundsEntities = ref<Cesium.Entity[]>([]);
 let drawingScriptReady = false;
@@ -1777,7 +1794,8 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div v-if="meshPlaybackDockVisible && meshDepthLegendVisible && meshFrames.length" class="mesh-depth-legend">
+    <div v-if="meshPlaybackDockVisible && meshFrames.length" class="mesh-playback-combined">
+    <div v-if="meshDepthLegendVisible" class="mesh-depth-legend">
       <button type="button" class="floating-close-btn legend-close-btn" title="关闭" aria-label="关闭水深图例" @click="hideMeshDepthLegend">×</button>
       <strong>水深</strong>
       <span>{{ meshDepthLegend.max }}</span>
@@ -1824,6 +1842,7 @@ onBeforeUnmount(() => {
         <button type="button" @click="renderNextMeshFrame" :disabled="!meshFrames.length">下一帧</button>
         <button type="button" @click="jumpMeshFrame(30)" :disabled="!meshFrames.length">快进</button>
       </div>
+    </div>
     </div>
     </Teleport>
   </div>
@@ -1904,19 +1923,21 @@ onBeforeUnmount(() => {
   font-size: 15px;
 }
 
-.mesh-playback-dock {
+.mesh-playback-combined {
   pointer-events: auto;
   position: fixed;
-  right: 136px;
-  bottom: 48px;
-  width: min(400px, calc(100vw - 48px));
+  right: 20px;
+  top: auto;
+  bottom: 90px;
+  width: min(480px, calc(100vw - 40px));
   height: 224px;
-  min-width: 320px;
+  min-width: min(430px, calc(100vw - 40px));
   min-height: 176px;
-  max-width: calc(100vw - 220px);
+  max-width: calc(100vw - 40px);
   max-height: calc(100vh - 96px);
-  padding: 16px 20px;
   box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
   border: 1px solid rgba(0, 229, 255, 0.2);
   border-radius: 12px;
   color: #e0f2fe;
@@ -1924,9 +1945,27 @@ onBeforeUnmount(() => {
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.1);
   backdrop-filter: blur(12px);
   z-index: 10040;
+  overflow: hidden;
+  resize: both;
+}
+
+.mesh-playback-dock {
+  pointer-events: auto;
+  position: relative;
+  order: 1;
+  flex: 1 1 auto;
+  width: auto;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  padding: 16px 20px;
+  box-sizing: border-box;
+  color: #e0f2fe;
+  background: transparent;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   overflow: auto;
-  resize: both;
 }
 
 .playback-dock-header,
@@ -2074,53 +2113,50 @@ onBeforeUnmount(() => {
 }
 
 .playback-secondary-actions {
-  justify-content: center;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px dashed rgba(255, 255, 255, 0.08);
-  flex-wrap: wrap;
 }
 
 .playback-secondary-actions button {
-  min-width: 80px;
-  padding: 6px 12px;
+  min-width: 0;
+  padding: 6px 2px;
   border: 1px solid transparent;
   border-radius: 4px;
   color: #7dd3fc;
   background: transparent;
   font-size: 12px;
   font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
 }
 
 .mesh-depth-legend {
   pointer-events: auto;
-  position: fixed;
-  right: 20px;
-  bottom: 48px;
+  position: relative;
+  order: 2;
+  flex: 0 0 104px;
   width: 104px;
-  height: 224px;
+  height: 100%;
   min-width: 96px;
-  min-height: 168px;
+  min-height: 0;
   max-width: 180px;
-  max-height: calc(100vh - 96px);
+  max-height: none;
   padding: 12px 10px;
   box-sizing: border-box;
-  border: 1px solid rgba(0, 229, 255, 0.18);
-  border-radius: 12px;
+  border-left: 1px solid rgba(0, 229, 255, 0.18);
   display: grid;
   grid-template-columns: auto 1fr;
   grid-template-rows: auto auto 1fr auto;
   column-gap: 8px;
   align-items: center;
   color: #e0f2fe;
-  background: rgba(8, 22, 38, 0.72);
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38), inset 0 1px 1px rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(12px);
-  z-index: 10040;
+  background: rgba(255, 255, 255, 0.015);
   overflow: auto;
-  resize: both;
 }
 
 .mesh-depth-legend strong {

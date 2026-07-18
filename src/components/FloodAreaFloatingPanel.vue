@@ -4,6 +4,8 @@ import {
   currentFloodPrimitive,
   currentFloodAreaM2,
   currentFloodFrame,
+  floodAreaPanelCloseToken,
+  floodAreaPanelOpenToken,
   floodAreaSeries
 } from '../store/floodState';
 
@@ -13,10 +15,10 @@ const PLOT_LEFT = 54;
 const PLOT_RIGHT = 344;
 const PLOT_TOP = 16;
 const PLOT_BOTTOM = 126;
-const DEFAULT_PANEL_WIDTH = 516;
+const DEFAULT_PANEL_WIDTH = 480;
 const DEFAULT_PANEL_HEIGHT = 288;
 const DEFAULT_PANEL_MARGIN_RIGHT = 20;
-const DEFAULT_PANEL_TOP = 118;
+const DEFAULT_PANEL_TOP = 90;
 
 const getDefaultPanelLeft = () => (
   typeof window === 'undefined'
@@ -241,6 +243,14 @@ watch(currentFloodPrimitive, (primitive, previousPrimitive) => {
   if (primitive && !previousPrimitive) {
     panelDismissed.value = false;
   }
+});
+
+watch(floodAreaPanelOpenToken, () => {
+  panelDismissed.value = false;
+});
+
+watch(floodAreaPanelCloseToken, () => {
+  panelDismissed.value = true;
 });
 
 onBeforeUnmount(() => {

@@ -216,9 +216,9 @@ const hasDepthData = computed(() => sortedDepthSeries.value.length > 0);
 type AnalysisGroupId = 'depth' | 'assets' | 'accuracy';
 
 const analysisGroups = ref<Array<{ id: AnalysisGroupId; title: string; expanded: boolean; visible: boolean }>>([
-  { id: 'depth', title: '点位水深分析', expanded: true, visible: true },
-  { id: 'assets', title: '承灾体淹没分析', expanded: true, visible: true },
-  { id: 'accuracy', title: '精度评价', expanded: true, visible: true }
+  { id: 'depth', title: '点位水深分析', expanded: false, visible: true },
+  { id: 'assets', title: '承灾体淹没分析', expanded: false, visible: true },
+  { id: 'accuracy', title: '精度评价', expanded: false, visible: true }
 ]);
 const panelReady = ref(false);
 let panelReadyFrame = 0;
@@ -1639,7 +1639,7 @@ onBeforeUnmount(() => {
     </div>
     </transition>
 
-    <transition name="side-float-right" appear>
+    <transition name="side-float-left" appear>
     <div v-if="panelReady && isAnalysisGroupVisible('accuracy')" class="analysis-group analysis-accuracy" :class="{ expanded: isAnalysisGroupExpanded('accuracy') }">
       <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('accuracy')">
         <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('accuracy') }">▶</span>
@@ -1661,8 +1661,8 @@ onBeforeUnmount(() => {
   inset: 0;
   z-index: 910;
   display: grid;
-  grid-template-columns: minmax(320px, 360px) minmax(360px, 1fr) minmax(320px, 360px);
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 360px) minmax(360px, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   align-items: start;
   gap: 14px 32px;
   padding: 90px 20px calc(var(--system-bottom-safe-space, 54px) + 24px);
@@ -1699,8 +1699,8 @@ onBeforeUnmount(() => {
 }
 
 .analysis-accuracy {
-  grid-column: 3;
-  grid-row: 1 / span 2;
+  grid-column: 1;
+  grid-row: 3;
   max-height: calc(100vh - var(--system-bottom-safe-space, 54px) - 122px);
 }
 
@@ -2159,7 +2159,7 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1280px) {
   .flood-analysis-panel {
-    grid-template-columns: minmax(300px, 340px) minmax(260px, 1fr) minmax(300px, 340px);
+    grid-template-columns: minmax(300px, 340px) minmax(260px, 1fr);
     gap: 14px 22px;
     padding-inline: 20px;
   }

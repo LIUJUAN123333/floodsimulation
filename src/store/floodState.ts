@@ -45,6 +45,9 @@ export const floodPlaybackToken = ref<number>(0);
 export const currentFloodFrame = ref<number>(0);
 export const currentFloodAreaM2 = ref<number>(0);
 export const floodAreaSeries = ref<FloodAreaPoint[]>([]);
+export const floodAreaPanelOpenToken = ref<number>(0);
+export const floodAreaPanelCloseToken = ref<number>(0);
+export const meshRenderCloseToken = ref<number>(0);
 export const selectedFloodDepthPoint = ref<FloodDepthMonitorPoint | null>(null);
 export const currentFloodPointDepthM = ref<number>(0);
 export const floodPointDepthSeries = ref<FloodPointDepthPoint[]>([]);
@@ -112,6 +115,18 @@ export const resetFloodAreaSeries = () => {
   currentFloodFrame.value = 0;
   currentFloodAreaM2.value = 0;
   floodAreaSeries.value = [];
+};
+
+export const requestFloodAreaPanelOpen = () => {
+  floodAreaPanelOpenToken.value += 1;
+};
+
+export const requestFloodAreaPanelClose = () => {
+  floodAreaPanelCloseToken.value += 1;
+};
+
+export const requestMeshRenderClose = () => {
+  meshRenderCloseToken.value += 1;
 };
 
 const getDepthArray = (jsonData: any): number[] | null => {

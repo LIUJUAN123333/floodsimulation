@@ -12,6 +12,7 @@ import {
   clearFloodDepthMonitorPoint,
   recordFloodAreaPoint,
   recordFloodPointDepth,
+  requestFloodAreaPanelOpen,
   resetFloodAreaSeries,
   resetFloodPointDepthSeries
 } from '../store/floodState';
@@ -189,7 +190,7 @@ const formatShowcaseElapsedTime = (frameIndex: number) => {
 };
 const showcaseDockStyle = computed(() => (
   showcaseDockPosition.top === null || showcaseDockPosition.left === null
-    ? { left: 'auto', right: '20px', top: 'auto', bottom: '48px' }
+    ? { left: 'auto', right: '20px', top: 'auto', bottom: '90px' }
     : { left: `${showcaseDockPosition.left}px`, right: 'auto', top: `${showcaseDockPosition.top}px`, bottom: 'auto' }
 ));
 const showcaseMaxFrameIndex = computed(() => Math.max(showcasePlayback.totalFrames - 1, 0));
@@ -1357,6 +1358,7 @@ const playShowcase = async (
     const normalizedStartIndex = Math.min(Math.max(Math.round(startFrameIndex), 0), floodUrls.length - 1);
     showcasePlayback.visible = true;
     showcaseDepthLegendVisible.value = true;
+    requestFloodAreaPanelOpen();
     showcasePlayback.status = 'buffering';
     showcasePlayback.caseId = caseId;
     currentShowcaseCaseId.value = caseId;
@@ -1590,12 +1592,27 @@ defineExpose({ playShowcase, resetFloodData });
 .showcase-playback-dock {
   position: fixed;
   right: 20px;
-  bottom: 48px;
+  top: auto;
+  bottom: 90px;
+  width: min(480px, calc(100vw - 40px));
+  height: 224px;
+  min-width: min(430px, calc(100vw - 40px));
+  min-height: 176px;
+  max-width: calc(100vw - 40px);
+  max-height: calc(100vh - 96px);
+  box-sizing: border-box;
   z-index: 10050;
   display: flex;
   align-items: stretch;
-  gap: 12px;
+  gap: 0;
+  border: 1px solid rgba(0, 229, 255, 0.2);
+  border-radius: 12px;
+  background: rgba(8, 22, 38, 0.75);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(12px);
   pointer-events: none;
+  overflow: hidden;
+  resize: both;
 }
 
 .showcase-playback-dock.dragging {
@@ -1609,45 +1626,38 @@ defineExpose({ playShowcase, resetFloodData });
 
 .showcase-playback-panel {
   position: relative;
-  width: min(400px, calc(100vw - 48px));
-  height: 224px;
-  min-width: 320px;
-  min-height: 176px;
-  max-width: calc(100vw - 220px);
-  max-height: calc(100vh - 96px);
+  flex: 1 1 auto;
+  width: auto;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
   padding: 16px 20px;
   box-sizing: border-box;
   color: #e0f2fe;
-  background: rgba(8, 22, 38, 0.75);
-  border: 1px solid rgba(0, 229, 255, 0.2);
-  border-radius: 12px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(12px);
+  background: transparent;
   pointer-events: auto;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
   overflow: auto;
-  resize: both;
 }
 
 .showcase-depth-legend {
   position: relative;
+  flex: 0 0 104px;
   width: 104px;
-  height: 224px;
+  height: 100%;
   min-width: 96px;
-  min-height: 168px;
+  min-height: 0;
   max-width: 180px;
-  max-height: calc(100vh - 96px);
+  max-height: none;
   padding: 12px 10px;
   box-sizing: border-box;
   color: #e0f2fe;
-  background: rgba(8, 22, 38, 0.72);
-  border: 1px solid rgba(0, 229, 255, 0.18);
-  border-radius: 12px;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.38), inset 0 1px 1px rgba(255, 255, 255, 0.08);
-  backdrop-filter: blur(12px);
+  background: rgba(255, 255, 255, 0.015);
+  border-left: 1px solid rgba(0, 229, 255, 0.18);
   pointer-events: auto;
   overflow: auto;
-  resize: both;
 }
 
 .showcase-depth-legend .legend-close-btn {
@@ -1939,10 +1949,20 @@ defineExpose({ playShowcase, resetFloodData });
 }
 
 .frame-actions {
-  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+  width: 100%;
   margin-top: 12px;
   padding-top: 12px;
   border-top: 1px dashed rgba(255, 255, 255, 0.08);
+}
+
+.frame-actions .showcase-control-btn.ghost {
+  min-width: 0;
+  padding-right: 2px;
+  padding-left: 2px;
+  white-space: nowrap;
 }
 
 .showcase-control-btn {
@@ -2022,17 +2042,10 @@ defineExpose({ playShowcase, resetFloodData });
 @media (max-width: 640px) {
   .showcase-playback-dock {
     right: 16px;
+    top: auto;
     bottom: 44px;
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .showcase-playback-panel {
-    width: 100%;
-  }
-
-  .showcase-depth-legend {
-    width: 104px;
+    width: calc(100vw - 32px);
+    min-width: 0;
   }
 }
 

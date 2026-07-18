@@ -71,8 +71,8 @@ type MonitorGroupId = 'status' | 'trends' | 'stationAlarm';
 
 const monitorGroups = ref<Array<{ id: MonitorGroupId; title: string; expanded: boolean; visible: boolean }>>([
   { id: 'status', title: '运行状态', expanded: true, visible: true },
-  { id: 'trends', title: '监测趋势', expanded: true, visible: true },
-  { id: 'stationAlarm', title: '站点告警', expanded: true, visible: true }
+  { id: 'trends', title: '监测趋势', expanded: false, visible: true },
+  { id: 'stationAlarm', title: '站点告警', expanded: false, visible: true }
 ]);
 
 const isMonitorGroupExpanded = (id: MonitorGroupId) => (
@@ -198,7 +198,7 @@ const closeMonitorGroup = (id: MonitorGroupId) => {
     </div>
     </transition>
 
-    <transition name="side-float-right" appear>
+    <transition name="side-float-left" appear>
     <div v-if="isMonitorGroupVisible('status')" class="monitor-group monitor-status" :class="{ expanded: isMonitorGroupExpanded('status') }">
       <div class="monitor-group-header" role="button" tabindex="0" @click="toggleMonitorGroup('status')">
         <span class="monitor-group-arrow" :class="{ expanded: isMonitorGroupExpanded('status') }">▶</span>
@@ -242,10 +242,10 @@ const closeMonitorGroup = (id: MonitorGroupId) => {
   inset: 0;
   z-index: 910;
   display: grid;
-  grid-template-columns: minmax(320px, 360px) minmax(360px, 1fr) minmax(320px, 360px);
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   align-items: start;
-  gap: 14px 32px;
+  gap: 10px 32px;
   padding: 90px 20px calc(var(--system-bottom-safe-space, 54px) + 24px);
   pointer-events: none;
 }
@@ -267,20 +267,20 @@ const closeMonitorGroup = (id: MonitorGroupId) => {
 }
 
 .monitor-status {
-  grid-column: 3;
-  grid-row: 1 / span 2;
+  grid-column: 1;
+  grid-row: 1;
   max-height: calc(100vh - var(--system-bottom-safe-space, 54px) - 122px);
 }
 
 .monitor-trends {
   grid-column: 1;
-  grid-row: 1;
+  grid-row: 2;
   max-height: 40vh;
 }
 
 .monitor-station-alarm {
   grid-column: 1;
-  grid-row: 2;
+  grid-row: 3;
   max-height: 40vh;
 }
 
@@ -668,7 +668,7 @@ const closeMonitorGroup = (id: MonitorGroupId) => {
 
 @media (max-width: 1280px) {
   .monitor-panel {
-    grid-template-columns: minmax(300px, 340px) minmax(260px, 1fr) minmax(300px, 340px);
+    grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
     gap: 14px 22px;
     padding-inline: 20px;
   }

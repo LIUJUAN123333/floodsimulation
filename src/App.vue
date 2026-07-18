@@ -21,6 +21,8 @@ import {
   floodPlaybackToken,
   currentShowcaseCaseId,
   clearFloodDepthMonitorPoint,
+  requestFloodAreaPanelClose,
+  requestMeshRenderClose,
   resetFloodAreaSeries
 } from './store/floodState';
 
@@ -34,6 +36,7 @@ import DisasterGallery from './components/DisasterGallery.vue';
 
 const cesiumViewerRef = ref<any>(null); // 新增 Ref
 const floodLoaderRef = ref<InstanceType<typeof FloodLoader> | null>(null);
+const dataProcessingPanelRef = ref<InstanceType<typeof DataProcessingPanel> | null>(null);
 const viewer = ref<any>(null);
 const terrainEnabled = ref(false);
 const terrainSwitching = ref(false);
@@ -105,6 +108,14 @@ const openPanel = (payload: { id: string; title: string }) => {
   activePanelId.value = payload.id;
   panelTitle.value = payload.id === 'intro' ? '项目简介' : payload.title;
   panelSubtitle.value = panelContents[payload.id] ?? '';
+
+  if (payload.id === 'demo') {
+    dataProcessingPanelRef.value?.hideMeshFloatingPanels();
+    if (!currentShowcaseCaseId.value) {
+      requestFloodAreaPanelClose();
+      requestMeshRenderClose();
+    }
+  }
   
   if (payload.id === 'simulation') {
     simulationPanelMounted.value = true;
@@ -416,10 +427,11 @@ const onFlyComplete = () => { showUI.value = true; };
         v-show="simulationPanelActive"
         class="module-panel-left"
         side="left"
-        :title="panelTitle"
-        :subtitle="panelSubtitle"
+        title="仿真模拟"
+        :subtitle="panelContents.simulation"
       >
         <DataProcessingPanel
+          ref="dataProcessingPanelRef"
           :viewer="viewer"
           :terrain-enabled="terrainEnabled"
           :panel-active="simulationPanelActive"
