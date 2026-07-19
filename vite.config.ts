@@ -150,6 +150,12 @@ export default defineConfig({
     port: 5174,
     allowedHosts: true,
     proxy: {
+      '/py-api': {
+        target: 'http://localhost:5000',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/py-api/, '')
+      },
       '/api': {
         target: 'http://localhost:18080',
         changeOrigin: true,

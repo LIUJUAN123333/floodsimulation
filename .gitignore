@@ -1,9 +1,202 @@
-**/node_modules/
-**/dist/
+# ============================================================
+# Flood Simulation System - Git Ignore Rules
+# 规则原则：
+# 1. 当前分工下以前端提交为主，Python/C++ 后端整体作为本地依赖忽略
+# 2. 忽略依赖目录、构建产物、缓存文件、调试文件
+# 3. 忽略大体积洪水数据、测试数据、临时输出数据
+# ============================================================
+
+
+# ============================================================
+# OS / Editor
+# ============================================================
 .DS_Store
-*.log
+Thumbs.db
+Desktop.ini
+
+# VS Code 本地配置：默认不提交个人设置，但允许团队任务配置
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+
+# ============================================================
+# Node / Vue / Vite frontend
+# ============================================================
+node_modules/
+**/node_modules/
+
+dist/
+**/dist/
+
+.vite/
+**/.vite/
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# ============================================================
+# Environment / local config
+# ============================================================
+.env
+.env.*
+!.env.example
+*.local
+
+
+# ============================================================
+# Python backend
+# ============================================================
+# 当前协作中如只提交前端，可整体忽略 Python 后端源码
+backend/
+
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+backend/uploads/
 backend/outputs/
-*.asc
+backend/logs/
+
+
+# ============================================================
+# Codex / Playwright / local debug artifacts
+# ============================================================
+.playwright-cli/
+output/
+outputs/
+screenshots/
+videos/
+trace/
+traces/
+playwright-report/
+test-results/
+
+
+# ============================================================
+# Flood showcase / test / large data
+# 大体积案例数据、测试数据不建议直接提交到 Git
+# ============================================================
 data_showcase/
 ../data_showcase/
+测试数据/
+
 public/data/showcase/*/files/
+
+*.zip
+*.rar
+*.7z
+*.tar
+*.tar.gz
+*.tgz
+
+# 常见地理/栅格/仿真大数据格式
+*.asc
+*.tif
+*.tiff
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.dat
+
+# Mesh / 洪水帧数据
+*.mesh.json
+**/*.mesh.json
+**/mesh/
+mesh.zip
+
+# 大批量仿真结果
+Flood*.json
+Flood*.txt
+flood_txt.zip
+flood_json.zip
+
+
+# ============================================================
+# C++ backend / Visual Studio artifacts
+# ============================================================
+# 当前协作中如只提交前端，可整体忽略 C++ 后端源码与工程目录
+FloodTest_parallel/
+
+FloodTest_parallel/.vs/
+FloodTest_parallel/ipch/
+FloodTest_parallel/%SystemDrive%/
+
+# Visual Studio 中间文件 / 数据库 / 用户配置
+*.obj
+*.o
+*.pch
+*.pdb
+*.idb
+*.ilk
+*.ipdb
+*.iobj
+*.tlog
+*.lastbuildstate
+*.recipe
+*.log
+*.sdf
+*.suo
+*.VC.db
+*.VC.VC.opendb
+*.vcxproj.user
+
+# 编译输出目录
+FloodTest_parallel/**/Debug/
+FloodTest_parallel/**/Release/
+FloodTest_parallel/**/x64/Debug/
+FloodTest_parallel/**/x64/Release/
+
+# C++ 后端运行时临时目录
+FloodTest_parallel/**/uploads/
+FloodTest_parallel/**/Data_dx_5m/
+
+# C++ 工程里夹带的旧测试数据 / 样例数据 / 压缩数据
+FloodTest_parallel/Data/
+FloodTest_parallel/Data_*/
+FloodTest_parallel/testData/
+FloodTest_parallel/lwl_new_*/
+FloodTest_parallel/FloodTest/Ffile/
+FloodTest_parallel/FloodTest/Cellularautomata*/
+FloodTest_parallel/FloodTest/Cellularautomata*
+FloodTest_parallel/FloodTest/t
+FloodTest_parallel/FloodTest/txt
+FloodTest_parallel/FloodTest/xt
+FloodTest_parallel/GridToTin.exe
+FloodTest_parallel/InitialRowAndCol.txt
+FloodTest_parallel/UpgradeLog.htm
+FloodTest_parallel/pingme.txt
+FloodTest_parallel/tinyxml2.cpp
+FloodTest_parallel/tinyxml2.h
+FloodTest_parallel/x64/include/nlohmann/
+FloodTest_parallel/x64/tinyxml2.cpp
+FloodTest_parallel/x64/tinyxml2.h
+FloodTest_parallel/*.zip
+FloodTest_parallel/*.rar
+FloodTest_parallel/*.vsdx
+
+# Windows 调试符号缓存目录
+FloodTest_parallel/*.pdb/
+FloodTest_parallel/**/*.pdb/
+
+
+# ============================================================
+# Temporary files
+# ============================================================
+*.tmp
+*.temp
+*.bak
+*.backup
+~$*

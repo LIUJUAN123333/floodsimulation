@@ -35,5 +35,5 @@ export const createInitialRoamState = (): RoamUiState => ({
   relativeHeight: 120,
   pointCount: 0,
   routeReady: false,
-  message: '可手动规划路径，或导入 WGS84 线状 shp 航线。'
+  message: '可手动规划路径，或导入包含坐标系信息的完整 Shapefile 航线。'
 });

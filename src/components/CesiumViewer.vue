@@ -12,7 +12,9 @@ import {
   Math as CesiumMath
 } from 'cesium';
 import type { RoamPhase, RoamUiState, RoamViewMode } from '../types/roam';
+import type { ShapefileImportSource } from '../types/shapefile';
 import { createInitialRoamState } from '../types/roam';
+import { importShapefileRoute } from '../utils/shapefileRoute';
 import {
   buildRoamFlightTrack,
   buildSmoothHorizontalRoute,
@@ -635,7 +637,7 @@ const clearRoam = () => {
   roamGroundTerrainProvider = null;
   roamMovingEntity = null;
   removeRoamEntities();
-  setRoamPhase('idle', '可手动规划路径，或导入 WGS84 线状 shp 航线。');
+  setRoamPhase('idle', '可手动规划路径，或导入包含坐标系信息的完整 Shapefile 航线。');
   requestRender();
 };
 
@@ -1062,90 +1064,47 @@ const stopRoam = () => {
   return '漫游已停止，已释放相机控制。';
 };
 
-const parseShpPolyline = (buffer: ArrayBuffer) => {
-  const view = new DataView(buffer);
-  const routes: number[][][] = [];
-  let offset = 100;
-
-  const readInt32BE = (position: number) => view.getInt32(position, false);
-  const readInt32LE = (position: number) => view.getInt32(position, true);
-  const readFloat64LE = (position: number) => view.getFloat64(position, true);
-
-  while (offset + 12 <= view.byteLength) {
-    const contentLength = readInt32BE(offset + 4) * 2;
-    const start = offset + 8;
-    const end = start + contentLength;
-    if (end > view.byteLength || contentLength < 4) break;
-
-    const shapeType = readInt32LE(start);
-    if ([1, 11, 21].includes(shapeType) && contentLength >= 20) {
-      routes.push([[readFloat64LE(start + 4), readFloat64LE(start + 12)]]);
-    }
-
-    if ([3, 5, 13, 15, 23, 25].includes(shapeType) && contentLength >= 44) {
-      const numParts = readInt32LE(start + 36);
-      const numPoints = readInt32LE(start + 40);
-      const partsOffset = start + 44;
-      const pointsOffset = partsOffset + numParts * 4;
-
-      for (let partIndex = 0; partIndex < numParts; partIndex += 1) {
-        const pointStart = readInt32LE(partsOffset + partIndex * 4);
-        const pointEnd = partIndex === numParts - 1 ? numPoints : readInt32LE(partsOffset + (partIndex + 1) * 4);
-        const route: number[][] = [];
-        for (let pointIndex = pointStart; pointIndex < pointEnd; pointIndex += 1) {
-          const pointOffset = pointsOffset + pointIndex * 16;
-          if (pointOffset + 16 <= end) {
-            route.push([readFloat64LE(pointOffset), readFloat64LE(pointOffset + 8)]);
-          }
-        }
-        if (route.length > 1) routes.push(route);
-      }
-    }
-
-    offset = end;
-  }
-
-  const longest = routes
-    .filter((route) => route.length > 1)
-    .sort((a, b) => b.length - a.length)[0];
-
-  if (!longest) {
-    throw new Error('未在 shp 文件中识别到可用于漫游的线状航线。');
-  }
-
-  const invalid = longest.some(([lon, lat]) => Math.abs(lon) > 180 || Math.abs(lat) > 90);
-  if (invalid) {
-    throw new Error('当前 shp 坐标不像 WGS84 经纬度，请先转换为 EPSG:4326 后再导入。');
-  }
-
-  return longest.map(([lon, lat]) => Cesium.Cartesian3.fromDegrees(lon, lat, 0));
-};
-
-const loadRoamShpRoute = async (file: File) => {
+const loadRoamShapefileDataset = async (
+  files: File[],
+  source: ShapefileImportSource = 'files'
+) => {
   if (!viewer) return '地图工具尚未准备好。';
-  if (!file.name.toLowerCase().endsWith('.shp')) {
-    throw new Error('请导入 .shp 格式的线状航线文件。');
+  if (files.length === 0) throw new Error('未选择任何 Shapefile 数据集文件。');
+
+  setRoamPhase('building', '正在检查 Shapefile 完整性、坐标系与线状几何...');
+  try {
+    const result = await importShapefileRoute(files, source);
+    const positions = result.coordinates.map(([longitude, latitude]) => (
+      Cesium.Cartesian3.fromDegrees(longitude, latitude, 0)
+    ));
+
+    clearRoam();
+    roamPath = positions;
+    const sourceText = `导入航线 · ${result.report.datasetName}`;
+    const built = await buildRoamTrack(roamCurrentHeight, sourceText);
+    if (!built || !viewer) {
+      throw new Error(roamUiState.message);
+    }
+
+    const sphere = Cesium.BoundingSphere.fromPoints(
+      roamTrackSamples.map((sample) => sample.flightPosition)
+    );
+    viewer.camera.flyToBoundingSphere(sphere, {
+      duration: 1.35,
+      offset: new Cesium.HeadingPitchRange(
+        0,
+        CesiumMath.toRadians(-45),
+        Math.max(sphere.radius * 3.8, 1800)
+      )
+    });
+
+    result.report.message = `${result.report.message} 已生成 ${positions.length} 个控制点的三维漫游轨迹。`;
+    return result.report;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Shapefile 航线导入失败。';
+    setRoamPhase('error', message);
+    throw error;
   }
-
-  const buffer = await file.arrayBuffer();
-  const positions = parseShpPolyline(buffer);
-  clearRoam();
-  roamPath = positions;
-  const sourceText = `导入航线 · ${file.name}`;
-  const built = await buildRoamTrack(roamCurrentHeight, sourceText);
-  if (!built || !viewer) {
-    throw new Error(roamUiState.message);
-  }
-
-  const sphere = Cesium.BoundingSphere.fromPoints(
-    roamTrackSamples.map((sample) => sample.flightPosition)
-  );
-  viewer.camera.flyToBoundingSphere(sphere, {
-    duration: 1.2,
-    offset: new Cesium.HeadingPitchRange(0, CesiumMath.toRadians(-45), Math.max(sphere.radius * 3.8, 1800))
-  });
-
-  return `已导入航线 ${file.name}，识别 ${positions.length} 个路径点，三维轨迹已生成。`;
 };
 
 const clearView = () => {
@@ -1165,7 +1124,7 @@ defineExpose({
   startPickRoamPath,
   startRoam,
   setRoamViewMode,
-  loadRoamShpRoute,
+  loadRoamShapefileDataset,
   toggleRoamPause,
   stopRoam,
   clearRoam
