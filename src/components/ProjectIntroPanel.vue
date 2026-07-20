@@ -4,33 +4,33 @@ import imgYongchuan from '../案例图片/永川.png';
 import imgJinshajiang from '../案例图片/金沙江.png';
 
 const workflowInputs = [
-  { title: '地形与下垫面', text: 'DEM / 影像 / 糙率', icon: 'terrain' },
-  { title: '暴雨洪水事件', text: '降雨 / 边界 / 初始水位', icon: 'storm' },
-  { title: '监测校核资料', text: '水位 / 流量 / 历史灾点', icon: 'monitor' }
+  { title: '高程数据', text: 'DEM.tif / dem.asc', icon: 'terrain' },
+  { title: '粗糙度数据', text: '下垫面 / cao.asc', icon: 'roughness' },
+  { title: '溃口资料', text: 'InputRiver.dat / 位置行列号', icon: 'breach' }
 ];
 
 const workflowEngine = [
-  { title: '空间预处理', text: '坐标统一、裁剪配准、网格化组织' },
-  { title: '参数建模', text: '糙率计算、行列号获取、地形配置' },
-  { title: '时序演算', text: '水深、流速与淹没范围连续推演' },
-  { title: '场景缓存', text: '三维水体、图层瓦片与统计指标生成' }
+  { title: '高程格式转换', text: 'TIF 转 ASC 高程文件' },
+  { title: '粗糙度计算', text: '根据下垫面生成 cao.asc' },
+  { title: '溃口参数整理', text: '绘制溃口并获取行列号' },
+  { title: '模拟文件组织', text: 'dem、cao、溃口文件输入计算' }
 ];
 
 const workflowOutputs = [
-  { title: '三维动态推演', text: '水体演进、剖面观察、过程回放' },
-  { title: '灾情统计评估', text: '淹没面积、水深分级、风险单元' },
-  { title: '方案复核输出', text: '参数校核、情景对比、数据分析' }
+  { title: '洪水模拟结果', text: '计算结果读取、时序组织、过程回放' },
+  { title: '三维动态表达', text: '洪水水体加载、地形叠加、视角漫游' },
+  { title: '灾情数据分析', text: '淹没范围、面积统计、水深分级' }
 ];
 
-const feedbackSteps = ['数据准备', '仿真计算', '三维表达', '灾情分析'];
+const feedbackSteps = ['数据处理', '文件输入', '模拟计算', '结果分析'];
 
 const capabilities = [
   {
     title: '多源数据预处理',
-    subtitle: '把分散的地形、河网、监测与事件资料整理为可计算的数据底座。',
+    subtitle: '围绕高程、粗糙度与溃口文件完成格式转换、参数整理和模拟输入准备。',
     visual: 'data',
     image: imgXiaojiaqiao,
-    tags: ['空间配准', '网格组织', '数据校核'],
+    tags: ['高程转换', '粗糙度计算', '溃口定位'],
     metric: '数据底座'
   },
   {
@@ -51,7 +51,7 @@ const capabilities = [
   },
   {
     title: '灾情分析与评估',
-    subtitle: '围绕淹没边界、影响对象与监测趋势提取指标，辅助形成可复核的研判结论。',
+    subtitle: '围绕淹没边界、影响对象与统计指标提取结果，辅助形成可复核的分析结论。',
     visual: 'analysis',
     image: imgXiaojiaqiao,
     tags: ['面积统计', '风险识别', '决策输出'],
@@ -129,14 +129,16 @@ const capabilities = [
                   <path d="M3 22 9 10l5 6 4-7 7 13H3Z" />
                   <path d="M9 10 12 5l4 8" />
                 </svg>
-                <svg v-else-if="item.icon === 'storm'" viewBox="0 0 28 28">
-                  <path d="M8 17h12a4 4 0 0 0 .4-7.98A6.5 6.5 0 0 0 7.7 10.3A3.3 3.3 0 0 0 8 17Z" />
-                  <path d="m10 20-1.2 2.8M15 20l-1.2 2.8M20 20l-1.2 2.8" />
+                <svg v-else-if="item.icon === 'roughness'" viewBox="0 0 28 28">
+                  <path d="M4 10 14 5l10 5-10 5-10-5Z" />
+                  <path d="M4 15 14 20l10-5" />
+                  <path d="M4 19 14 24l10-5" />
                 </svg>
                 <svg v-else viewBox="0 0 28 28">
-                  <path d="M5 22V6M5 22h18" />
-                  <path d="m8 17 4-5 4 3 6-8" />
-                  <circle cx="22" cy="7" r="2" />
+                  <path d="M6 22 9 8l5 4 5-5 3 15" />
+                  <path d="M9 8h10" />
+                  <path d="M12 15h4" />
+                  <circle cx="14" cy="12" r="2" />
                 </svg>
               </div>
               <div>
@@ -153,7 +155,7 @@ const capabilities = [
           <div class="core-ring">
             <span class="core-pulse" aria-hidden="true"></span>
             <small>MODEL CORE</small>
-            <strong>洪水过程<br />计算核心</strong>
+            <strong>洪水模拟<br />计算核心</strong>
           </div>
           <div class="engine-steps">
             <article v-for="(item, index) in workflowEngine" :key="item.title" class="engine-step">
@@ -185,7 +187,7 @@ const capabilities = [
           <div class="feedback-steps">
             <span v-for="step in feedbackSteps" :key="step">{{ step }}</span>
           </div>
-          <p>用户可从数据准备出发，完成仿真计算、三维表达与灾情分析，并结合淹没范围、监测校核和统计指标持续调整，形成可追踪、可复核的分析闭环。</p>
+          <p>用户先完成高程格式转换、粗糙度计算和溃口位置整理，再输入模拟所需文件生成洪水结果，最后在三维场景中查看过程并开展淹没范围与面积统计分析。</p>
         </div>
       </div>
     </section>
@@ -211,12 +213,13 @@ const capabilities = [
             <template v-if="capability.visual === 'data'">
               <div class="dataset-stack">
                 <span>DEM.tif</span>
-                <span>River.shp</span>
-                <span>Rainfall.csv</span>
+                <span>dem.asc</span>
+                <span>cao.asc</span>
+                <span>InputRiver.dat</span>
               </div>
               <div class="data-coordinate">
-                <strong>EPSG:4547</strong>
-                <span>空间配准完成</span>
+                <strong>ASC / DAT</strong>
+                <span>模拟输入准备</span>
               </div>
             </template>
 
@@ -316,24 +319,6 @@ const capabilities = [
             </div>
           </div>
         </article>
-      </div>
-    </section>
-
-    <section class="content-section closure-section">
-      <div class="closure-card">
-        <div>
-          <h3>典型分析评估流程</h3>
-        </div>
-        <p>
-          面板承担从案例接入到结果复核的前端交互入口：用户先加载案例与基础数据，
-          再查看洪水演进过程，结合三维视角和统计指标识别重点影响区，最终形成可复核的灾情分析与风险评估结果。
-        </p>
-        <div class="closure-steps" aria-label="典型分析评估流程步骤">
-          <span>案例数据接入</span>
-          <span>洪水过程推演</span>
-          <span>重点影响识别</span>
-          <span>分析结果复核</span>
-        </div>
       </div>
     </section>
   </section>
@@ -447,10 +432,10 @@ const capabilities = [
   max-width: 560px;
   margin: 0;
   color: #ffffff;
-  font-size: 29px;
+  font-size: 23px;
   font-weight: 800;
-  letter-spacing: 0.01em;
-  line-height: 1.28;
+  letter-spacing: 0.05em;
+  line-height: 1.34;
   text-shadow: 0 3px 18px rgba(0, 0, 0, 0.78);
 }
 
@@ -591,8 +576,7 @@ const capabilities = [
   letter-spacing: 0.08em;
 }
 
-.section-heading h3,
-.closure-card h3 {
+.section-heading h3 {
   margin: 0;
   color: #f3fbff;
   font-size: 17px;
@@ -772,12 +756,12 @@ const capabilities = [
   transform: translateX(2px) scale(1.04);
 }
 
-.symbol-storm {
+.symbol-roughness {
   color: #7ee6bd;
   background: rgba(93, 227, 179, 0.11);
 }
 
-.symbol-monitor {
+.symbol-breach {
   color: #efca79;
   background: rgba(241, 198, 107, 0.1);
 }
@@ -907,9 +891,13 @@ const capabilities = [
 
 .engine-step {
   position: absolute;
+  box-sizing: border-box;
+  display: flex;
+  height: 82px;
+  flex-direction: column;
   width: 138px;
-  min-height: 72px;
   padding: 10px 11px;
+  overflow: hidden;
   border: 1px solid rgba(111, 235, 242, 0.16);
   border-radius: 11px;
   background: rgba(5, 22, 32, 0.86);
@@ -1195,27 +1183,33 @@ const capabilities = [
 
 .dataset-stack {
   position: absolute;
-  top: 60px;
-  right: 16px;
+  top: 66px;
+  right: 12px;
   z-index: 3;
-  display: flex;
-  width: 130px;
-  flex-direction: column;
-  gap: 8px;
+  display: grid;
+  width: 154px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .dataset-stack span {
   box-sizing: border-box;
   width: 100%;
-  padding: 7px 10px;
+  height: 24px;
+  overflow: hidden;
+  padding: 0 7px;
   border: 1px solid rgba(115, 242, 191, 0.2);
-  border-radius: 8px;
+  border-radius: 7px;
   color: #dff8fb;
   font-family: "Cascadia Mono", "Courier New", monospace;
-  font-size: 9px;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 22px;
+  text-align: center;
+  text-overflow: ellipsis;
   white-space: nowrap;
   background: rgba(4, 20, 28, 0.72);
-  box-shadow: -10px 10px 20px rgba(0, 0, 0, 0.16);
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.14);
 }
 
 .dataset-stack span:nth-child(2) {
@@ -1683,47 +1677,6 @@ const capabilities = [
   background: rgba(63, 137, 149, 0.1);
 }
 
-.closure-card {
-  display: grid;
-  grid-template-columns: 148px minmax(0, 1fr) 310px;
-  align-items: center;
-  gap: 18px;
-  padding: 18px 20px;
-  border: 1px solid rgba(120, 167, 178, 0.18);
-  border-radius: 12px;
-  background:
-    radial-gradient(circle at 87% 50%, rgba(114, 231, 189, 0.1), transparent 30%),
-    linear-gradient(135deg, rgba(8, 29, 40, 0.86), rgba(5, 18, 27, 0.82));
-}
-
-.closure-card > div:first-child {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.closure-card p {
-  margin: 0;
-  color: #8ca7b0;
-  font-size: 11px;
-  line-height: 1.72;
-}
-
-.closure-steps {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.closure-steps span {
-  padding: 8px 9px;
-  border-left: 2px solid rgba(114, 231, 189, 0.72);
-  color: #d9eff3;
-  font-size: 11px;
-  font-weight: 700;
-  background: rgba(255, 255, 255, 0.035);
-}
-
 @media (max-width: 900px) {
   .workflow-map {
     min-height: auto;
@@ -1791,9 +1744,6 @@ const capabilities = [
     grid-template-columns: 1fr;
   }
 
-  .closure-card {
-    grid-template-columns: 1fr;
-  }
 }
 
 @media (max-width: 640px) {
@@ -1810,7 +1760,7 @@ const capabilities = [
 
   .hero-content h2 {
     max-width: 330px;
-    font-size: 22px;
+    font-size: 20px;
   }
 
   .hero-content > p {
@@ -1866,9 +1816,6 @@ const capabilities = [
     border-bottom: 1px solid rgba(118, 163, 173, 0.14);
   }
 
-  .closure-steps {
-    grid-template-columns: 1fr;
-  }
 }
 </style>
 

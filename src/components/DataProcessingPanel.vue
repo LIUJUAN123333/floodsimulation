@@ -36,6 +36,9 @@ const emit = defineEmits<{
 type MenuChild = { id: string; name: string };
 type MenuGroup = { name: string; expanded: boolean; children: MenuChild[] };
 
+const PY_API_BASE = '/py-api';
+const pythonApiUrl = (path: string) => `${PY_API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+
 const activeItem = ref<string | null>(null);
 const convertFile = ref<File | null>(null);
 const convertLoading = ref(false);
@@ -984,7 +987,7 @@ const fetchAndDisplayTiffBounds = async (file: File) => {
   try {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await fetch('http://localhost:5000/get_tiff_bounds', {
+    const response = await fetch(pythonApiUrl('/get_tiff_bounds'), {
       method: 'POST',
       body: formData
     });
@@ -1036,7 +1039,7 @@ const handleConvertSubmit = async () => {
     const formData = new FormData();
     formData.append('file', convertFile.value);
 
-    const response = await fetch('http://localhost:5000/convert', {
+    const response = await fetch(pythonApiUrl('/convert'), {
       method: 'POST',
       body: formData
     });
@@ -1049,7 +1052,7 @@ const handleConvertSubmit = async () => {
     convertMessage.value = result.message || 'Convert finished';
 
     if (result.download_url) {
-      const downloadUrl = `http://localhost:5000${result.download_url}`;
+      const downloadUrl = pythonApiUrl(result.download_url);
       triggerDownload(downloadUrl);
     }
   } catch (error) {
@@ -1096,7 +1099,7 @@ const handleRoughnessSubmit = async () => {
     }
     formData.append('show_bounds', roughnessShowBounds.value ? 'true' : 'false');
 
-    const response = await fetch('http://localhost:5000/roughness', {
+    const response = await fetch(pythonApiUrl('/roughness'), {
       method: 'POST',
       body: formData
     });
@@ -1113,7 +1116,7 @@ const handleRoughnessSubmit = async () => {
     }
 
     if (result.download_url) {
-      const downloadUrl = `http://localhost:5000${result.download_url}`;
+      const downloadUrl = pythonApiUrl(result.download_url);
       triggerDownload(downloadUrl);
     }
   } catch (error) {
@@ -1131,7 +1134,7 @@ const gttMessage = ref('');
 
 const pickPath = async (type: 'file' | 'dir', field: 'dem' | 'depth' | 'output') => {
   try {
-    const response = await fetch('http://localhost:5000/api/choose-path', {
+    const response = await fetch(pythonApiUrl('/api/choose-path'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type })
@@ -1152,7 +1155,7 @@ const runGridToTin = async () => {
   gttRunning.value = true;
   gttMessage.value = '转换中...';
   try {
-    const response = await fetch('http://localhost:5000/api/grid-to-tin', {
+    const response = await fetch(pythonApiUrl('/api/grid-to-tin'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -1286,7 +1289,7 @@ const handleRowcolSubmit = async () => {
     }
     formData.append('coordinates', JSON.stringify(coordinates));
 
-    const response = await fetch('http://localhost:5000/get_ascii_values', {
+    const response = await fetch(pythonApiUrl('/get_ascii_values'), {
       method: 'POST',
       body: formData
     });
@@ -1299,7 +1302,7 @@ const handleRowcolSubmit = async () => {
     rowcolMessage.value = result.message || `成功获取 ${coordinates.length} 个坐标点行列号`;
 
     if (result.download_url) {
-      const downloadUrl = `http://localhost:5000${result.download_url}`;
+      const downloadUrl = pythonApiUrl(result.download_url);
       triggerDownload(downloadUrl);
     }
   } catch (error) {

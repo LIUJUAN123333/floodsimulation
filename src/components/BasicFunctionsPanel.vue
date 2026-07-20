@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import type { RoamUiState } from '../types/roam';
+import type { ShapefileImportReport, ShapefileImportSource } from '../types/shapefile';
+import { ShapefileImportError } from '../utils/shapefileRoute';
 
 const props = defineProps<{
   cesiumViewerRef?: any;
@@ -16,15 +18,33 @@ const roamHeight = ref('120');
 const basicStatus = ref('选择一个基础工具后，可直接在三维视图中交互。');
 const roamViewMode = ref<'third' | 'first'>('third');
 const roamFileInput = ref<HTMLInputElement | null>(null);
+const roamFolderInput = ref<HTMLInputElement | null>(null);
+const shapefileImportReport = ref<ShapefileImportReport | null>(null);
+const shapefileImportBusy = ref(false);
+const shapefileDropActive = ref(false);
+const basicIconDockRef = ref<HTMLElement | null>(null);
+const basicFlyoutRef = ref<HTMLElement | null>(null);
+const flyoutDetached = ref(false);
+const flyoutDragging = ref(false);
+const flyoutPosition = ref({ x: 0, y: 0 });
+let flyoutDragOffset = { x: 0, y: 0 };
+let flyoutPointerId: number | null = null;
 const roamPhase = computed(() => props.roamState?.phase ?? 'idle');
 const roamPaused = computed(() => roamPhase.value === 'paused');
 const roamBusy = computed(() => ['building', 'transitioning'].includes(roamPhase.value));
 const roamRunning = computed(() => roamPhase.value === 'running');
 const roamRouteReady = computed(() => props.roamState?.routeReady ?? false);
-const roamCanStart = computed(() => roamRouteReady.value && !roamBusy.value && !roamRunning.value);
+const roamCanStart = computed(() => (
+  roamRouteReady.value &&
+  ['ready', 'stopped', 'completed'].includes(roamPhase.value) &&
+  !shapefileImportBusy.value
+));
 const roamCanPause = computed(() => ['running', 'paused'].includes(roamPhase.value));
 const roamCanStop = computed(() => ['running', 'paused', 'transitioning'].includes(roamPhase.value));
-const roamCanEditRoute = computed(() => !['building', 'transitioning', 'running', 'paused'].includes(roamPhase.value));
+const roamCanEditRoute = computed(() => (
+  !shapefileImportBusy.value &&
+  !['building', 'transitioning', 'running', 'paused'].includes(roamPhase.value)
+));
 const roamProgressPercent = computed(() => Math.round((props.roamState?.progress ?? 0) * 100));
 const roamDistanceText = computed(() => {
   const distance = props.roamState?.distance ?? 0;
@@ -47,6 +67,15 @@ const roamPhaseText = computed(() => {
   };
   return labels[roamPhase.value];
 });
+const shapefileCrsLabel = computed(() => {
+  const crs = shapefileImportReport.value?.sourceCrs;
+  if (!crs) return '未识别';
+  return crs.authority ? `${crs.authority} · ${crs.name}` : crs.name;
+});
+const shapefileLengthText = computed(() => {
+  const length = shapefileImportReport.value?.geometry?.selectedLengthMeters ?? 0;
+  return length >= 1000 ? `${(length / 1000).toFixed(2)} km` : `${length.toFixed(0)} m`;
+});
 
 type MeasureMode = 'distance' | 'height' | 'area';
 
@@ -59,6 +88,126 @@ watch(
   },
   { immediate: true }
 );
+
+const flyoutStyle = computed(() => {
+  if (!flyoutDetached.value) return {};
+  return {
+    left: `${flyoutPosition.value.x}px`,
+    top: `${flyoutPosition.value.y}px`,
+    right: 'auto',
+    bottom: 'auto',
+    zIndex: '10080'
+  };
+});
+
+const clampFlyoutPosition = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+
+const getFlyoutContainerRect = () => basicIconDockRef.value?.getBoundingClientRect() ?? { left: 0, top: 0 };
+
+const moveFlyoutTo = (clientX: number, clientY: number) => {
+  const el = basicFlyoutRef.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const containerRect = getFlyoutContainerRect();
+  const margin = 8;
+  const maxX = Math.max(margin, window.innerWidth - rect.width - margin);
+  const maxY = Math.max(margin, window.innerHeight - rect.height - margin);
+  const nextViewportX = clampFlyoutPosition(clientX - flyoutDragOffset.x, margin, maxX);
+  const nextViewportY = clampFlyoutPosition(clientY - flyoutDragOffset.y, margin, maxY);
+  flyoutPosition.value = {
+    x: nextViewportX - containerRect.left,
+    y: nextViewportY - containerRect.top
+  };
+};
+
+const handleFlyoutPointerMove = (event: PointerEvent) => {
+  if (!flyoutDragging.value || flyoutPointerId !== event.pointerId) return;
+  event.preventDefault();
+  moveFlyoutTo(event.clientX, event.clientY);
+};
+
+const handleFlyoutPointerUp = (event?: PointerEvent) => {
+  if (event && flyoutPointerId !== event.pointerId) return;
+  flyoutDragging.value = false;
+  flyoutPointerId = null;
+  window.removeEventListener('pointermove', handleFlyoutPointerMove);
+  window.removeEventListener('pointerup', handleFlyoutPointerUp);
+  window.removeEventListener('pointercancel', handleFlyoutPointerUp);
+};
+
+const handleFlyoutPointerDown = (event: PointerEvent) => {
+  if (event.button !== 0) return;
+  const el = basicFlyoutRef.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const containerRect = getFlyoutContainerRect();
+  flyoutDetached.value = true;
+  flyoutDragging.value = true;
+  flyoutPointerId = event.pointerId;
+  flyoutDragOffset = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top
+  };
+  flyoutPosition.value = { x: rect.left - containerRect.left, y: rect.top - containerRect.top };
+  (event.currentTarget as HTMLElement | null)?.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+  window.addEventListener('pointermove', handleFlyoutPointerMove, { passive: false });
+  window.addEventListener('pointerup', handleFlyoutPointerUp);
+  window.addEventListener('pointercancel', handleFlyoutPointerUp);
+};
+
+const handleFlyoutMouseMove = (event: MouseEvent) => {
+  if (!flyoutDragging.value || flyoutPointerId !== -1) return;
+  event.preventDefault();
+  moveFlyoutTo(event.clientX, event.clientY);
+};
+
+const handleFlyoutMouseUp = () => {
+  if (flyoutPointerId !== -1) return;
+  flyoutDragging.value = false;
+  flyoutPointerId = null;
+  window.removeEventListener('mousemove', handleFlyoutMouseMove);
+  window.removeEventListener('mouseup', handleFlyoutMouseUp);
+};
+
+const handleFlyoutMouseDown = (event: MouseEvent) => {
+  if (flyoutDragging.value) return;
+  if (event.button !== 0) return;
+  const el = basicFlyoutRef.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+  const containerRect = getFlyoutContainerRect();
+  flyoutDetached.value = true;
+  flyoutDragging.value = true;
+  flyoutPointerId = -1;
+  flyoutDragOffset = {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top
+  };
+  flyoutPosition.value = { x: rect.left - containerRect.left, y: rect.top - containerRect.top };
+  event.preventDefault();
+  window.addEventListener('mousemove', handleFlyoutMouseMove, { passive: false });
+  window.addEventListener('mouseup', handleFlyoutMouseUp);
+};
+
+const resetFlyoutPosition = () => {
+  flyoutDetached.value = false;
+  flyoutDragging.value = false;
+  flyoutPointerId = null;
+  window.removeEventListener('pointermove', handleFlyoutPointerMove);
+  window.removeEventListener('pointerup', handleFlyoutPointerUp);
+  window.removeEventListener('pointercancel', handleFlyoutPointerUp);
+  window.removeEventListener('mousemove', handleFlyoutMouseMove);
+  window.removeEventListener('mouseup', handleFlyoutMouseUp);
+};
+
+watch(activeBasicFlyout, () => {
+  resetFlyoutPosition();
+});
+
+onBeforeUnmount(() => {
+  resetFlyoutPosition();
+});
 
 const toggleBasicFlyout = (panel: 'fly' | 'measure' | 'roam') => {
   activeBasicFlyout.value = activeBasicFlyout.value === panel ? null : panel;
@@ -121,18 +270,44 @@ const handleImportRoamRoute = () => {
   roamFileInput.value?.click();
 };
 
-const handleRoamFileChange = async (event: Event) => {
-  const input = event.target as HTMLInputElement;
-  const file = input.files?.[0];
-  if (!file) return;
+const handleImportRoamFolder = () => {
+  roamFolderInput.value?.click();
+};
+
+const runShapefileImport = async (files: File[], source: ShapefileImportSource) => {
+  if (files.length === 0 || shapefileImportBusy.value) return;
+  shapefileImportBusy.value = true;
+  shapefileImportReport.value = null;
+  basicStatus.value = '正在校验数据集完整性、坐标参考系与线状几何...';
   try {
-    const message = await props.cesiumViewerRef?.loadRoamShpRoute?.(file);
-    basicStatus.value = message || '已导入航线，可开始漫游。';
+    const report = await props.cesiumViewerRef?.loadRoamShapefileDataset?.(files, source);
+    if (!report || typeof report === 'string') {
+      basicStatus.value = report || '地图工具尚未准备好。';
+      return;
+    }
+    shapefileImportReport.value = report as ShapefileImportReport;
+    basicStatus.value = report.message;
   } catch (error) {
-    basicStatus.value = error instanceof Error ? error.message : '航线导入失败，请检查 shp 文件坐标。';
+    if (error instanceof ShapefileImportError) {
+      shapefileImportReport.value = error.report;
+    }
+    basicStatus.value = error instanceof Error ? error.message : 'Shapefile 航线导入失败。';
   } finally {
-    input.value = '';
+    shapefileImportBusy.value = false;
+    shapefileDropActive.value = false;
   }
+};
+
+const handleRoamFileChange = async (event: Event, source: ShapefileImportSource) => {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  await runShapefileImport(files, source);
+  input.value = '';
+};
+
+const handleShapefileDrop = async (event: DragEvent) => {
+  const files = Array.from(event.dataTransfer?.files ?? []);
+  await runShapefileImport(files, 'drop');
 };
 
 const handleStartRoam = async () => {
@@ -158,12 +333,13 @@ const handleStopRoam = () => {
 
 const handleClearRoam = () => {
   props.cesiumViewerRef?.clearRoam?.();
+  shapefileImportReport.value = null;
   basicStatus.value = '已清除漫游路径。';
 };
 </script>
 
 <template>
-  <div class="basic-icon-dock">
+  <div ref="basicIconDockRef" class="basic-icon-dock" @pointerdown.stop @mousedown.stop @click.stop>
     <button type="button" data-label="HOME" class="basic-icon-btn" title="HOME" aria-label="HOME" @click="handleFlyHome">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M4 11L12 4L20 11V20H15V14H9V20H4V11Z" /></svg>
     </button>
@@ -184,11 +360,16 @@ const handleClearRoam = () => {
     </button>
     <div
       v-if="activeBasicFlyout"
+      ref="basicFlyoutRef"
       class="basic-tool-flyout"
-      :class="`flyout-${activeBasicFlyout}`"
+      :class="[`flyout-${activeBasicFlyout}`, { 'is-detached': flyoutDetached, dragging: flyoutDragging }]"
+      :style="flyoutStyle"
+      @pointerdown.stop
+      @mousedown.stop
+      @click.stop
     >
       <template v-if="activeBasicFlyout === 'fly'">
-        <div class="flyout-title">定位飞行</div>
+        <div class="flyout-title drag-handle" title="按住拖动面板，双击恢复默认位置" @pointerdown="handleFlyoutPointerDown" @mousedown="handleFlyoutMouseDown" @dblclick="resetFlyoutPosition">定位飞行</div>
         <div class="tool-input-grid">
           <label><span>经度</span><input v-model="flyLon" class="basic-input" type="number" step="0.000001" /></label>
           <label><span>纬度</span><input v-model="flyLat" class="basic-input" type="number" step="0.000001" /></label>
@@ -198,7 +379,7 @@ const handleClearRoam = () => {
       </template>
 
       <template v-if="activeBasicFlyout === 'measure'">
-        <div class="flyout-title">量测标绘</div>
+        <div class="flyout-title drag-handle" title="按住拖动面板，双击恢复默认位置" @pointerdown="handleFlyoutPointerDown" @mousedown="handleFlyoutMouseDown" @dblclick="resetFlyoutPosition">量测标绘</div>
         <button class="sys-btn workflow-btn" @click="handleStartMeasure('distance')">距离</button>
         <button class="sys-btn workflow-btn" @click="handleStartMeasure('height')">高度</button>
         <button class="sys-btn workflow-btn" @click="handleStartMeasure('area')">面积</button>
@@ -206,7 +387,7 @@ const handleClearRoam = () => {
       </template>
 
       <template v-if="activeBasicFlyout === 'roam'">
-        <div class="flyout-title">智能路径漫游</div>
+        <div class="flyout-title drag-handle" title="按住拖动面板，双击恢复默认位置" @pointerdown="handleFlyoutPointerDown" @mousedown="handleFlyoutMouseDown" @dblclick="resetFlyoutPosition">智能路径漫游</div>
         <div class="roam-mode-switch" aria-label="漫游视角模式">
           <button
             type="button"
@@ -244,15 +425,119 @@ const handleClearRoam = () => {
             <span>{{ roamProgressPercent }}%</span>
           </div>
         </div>
+        <div
+          class="roam-source-panel"
+          :class="{ 'drop-active': shapefileDropActive }"
+          @dragenter.prevent="shapefileDropActive = true"
+          @dragover.prevent="shapefileDropActive = true"
+          @dragleave.prevent="shapefileDropActive = false"
+          @drop.prevent="handleShapefileDrop"
+        >
+          <div class="roam-source-head">
+            <span>航线来源</span>
+            <small>场景基准 WGS84</small>
+          </div>
+          <div class="roam-source-actions">
+            <button class="source-btn" :disabled="!roamCanEditRoute" title="在三维场景中设置路径节点" @click="handlePickRoamPath">
+              <svg viewBox="0 0 24 24" aria-hidden><path d="M5 18C8 15 8 8 12 8C16 8 15 15 19 18M5 18L5 14M19 18L19 14M12 8V4" /></svg>
+              <span>地图拾取</span>
+            </button>
+            <button class="source-btn" :disabled="!roamCanEditRoute" title="同时选择同名的 .shp、.shx、.dbf、.prj 文件" @click="handleImportRoamRoute">
+              <svg viewBox="0 0 24 24" aria-hidden><path d="M12 4V15M8 11L12 15L16 11M5 18H19" /></svg>
+              <span>选择文件组</span>
+            </button>
+            <button class="source-btn" :disabled="!roamCanEditRoute" title="选择包含完整 Shapefile 数据集的文件夹" @click="handleImportRoamFolder">
+              <svg viewBox="0 0 24 24" aria-hidden><path d="M3 7H10L12 9H21V19H3V7Z" /></svg>
+              <span>选择文件夹</span>
+            </button>
+          </div>
+          <div class="shapefile-requirement">
+            <span>必需</span>
+            <code>.shp</code><code>.shx</code><code>.dbf</code><code>.prj</code>
+            <span>可选</span><code>.cpg</code>
+          </div>
+          <div v-if="shapefileImportBusy" class="shapefile-loading">
+            <i aria-hidden="true"></i>
+            <span>正在进行空间参考与数据一致性检查</span>
+          </div>
+        </div>
+        <div
+          v-if="shapefileImportReport"
+          class="shapefile-report"
+          :class="`report-${shapefileImportReport.status}`"
+        >
+          <div class="shapefile-report-head">
+            <div>
+              <span class="report-status-icon" aria-hidden>
+                <svg v-if="shapefileImportReport.status === 'ready'" viewBox="0 0 20 20"><path d="M4 10L8 14L16 6" /></svg>
+                <svg v-else viewBox="0 0 20 20"><path d="M10 4V11M10 15V15.1" /></svg>
+              </span>
+              <span class="report-dataset" :title="shapefileImportReport.datasetName">{{ shapefileImportReport.datasetName }}</span>
+            </div>
+            <strong>{{ shapefileImportReport.status === 'ready' ? '校验通过' : '需要处理' }}</strong>
+          </div>
+          <div class="component-checks">
+            <span
+              v-for="check in shapefileImportReport.componentChecks"
+              :key="check.extension"
+              class="component-check"
+              :class="`check-${check.status}`"
+              :title="check.detail"
+            >
+              <i aria-hidden="true"></i>
+              .{{ check.extension }}
+              <small>{{ check.label }}</small>
+            </span>
+          </div>
+          <div v-if="shapefileImportReport.sourceCrs" class="crs-flow">
+            <div>
+              <span>源坐标系</span>
+              <strong :title="shapefileCrsLabel">{{ shapefileCrsLabel }}</strong>
+            </div>
+            <svg viewBox="0 0 34 14" aria-hidden><path d="M1 7H31M26 2L31 7L26 12" /></svg>
+            <div>
+              <span>场景坐标系</span>
+              <strong>EPSG:4326</strong>
+            </div>
+          </div>
+          <div v-if="shapefileImportReport.geometry" class="shapefile-metrics">
+            <span><small>航线长度</small><strong>{{ shapefileLengthText }}</strong></span>
+            <span><small>有效节点</small><strong>{{ shapefileImportReport.geometry.selectedPointCount }}</strong></span>
+            <span><small>几何类型</small><strong>{{ shapefileImportReport.geometry.shapeType }}</strong></span>
+          </div>
+          <div v-if="shapefileImportReport.warnings.length" class="shapefile-warnings">
+            <p
+              v-for="warning in shapefileImportReport.warnings.slice(0, 2)"
+              :key="warning"
+              :title="warning"
+            >
+              {{ warning }}
+            </p>
+          </div>
+        </div>
         <div class="roam-action-grid">
-          <button class="sys-btn workflow-btn" :disabled="!roamCanEditRoute" title="在三维场景中设置路径节点" @click="handlePickRoamPath">拾取路径</button>
-          <button class="sys-btn workflow-btn" :disabled="!roamCanEditRoute" title="导入 WGS84 线状 shp 航线" @click="handleImportRoamRoute">导入航线</button>
           <button class="sys-btn workflow-btn primary" :disabled="!roamCanStart" @click="handleStartRoam">{{ roamBusy ? '准备中' : '开始漫游' }}</button>
           <button class="sys-btn workflow-btn" :disabled="!roamCanPause" @click="handleToggleRoamPause">{{ roamPaused ? '继续' : '暂停' }}</button>
           <button class="sys-btn workflow-btn danger-soft" :disabled="!roamCanStop" @click="handleStopRoam">停止</button>
+          <button class="sys-btn workflow-btn" :disabled="roamBusy || roamRunning || shapefileImportBusy" @click="handleClearRoam">清除路径</button>
         </div>
-        <button class="sys-btn workflow-btn" :disabled="roamBusy || roamRunning" @click="handleClearRoam">清除路径</button>
-        <input ref="roamFileInput" class="file-input-hidden" type="file" accept=".shp" @change="handleRoamFileChange" />
+        <input
+          ref="roamFileInput"
+          class="file-input-hidden"
+          type="file"
+          accept=".shp,.shx,.dbf,.prj,.cpg"
+          multiple
+          @change="handleRoamFileChange($event, 'files')"
+        />
+        <input
+          ref="roamFolderInput"
+          class="file-input-hidden"
+          type="file"
+          accept=".shp,.shx,.dbf,.prj,.cpg"
+          webkitdirectory
+          multiple
+          @change="handleRoamFileChange($event, 'folder')"
+        />
       </template>
 
       <div class="basic-flyout-status">{{ basicStatus }}</div>
@@ -399,6 +684,20 @@ const handleClearRoam = () => {
   background: linear-gradient(90deg, transparent, rgba(0, 229, 255, 0.52), transparent);
 }
 
+.basic-tool-flyout.is-detached {
+  bottom: auto;
+  transform: none;
+}
+
+.basic-tool-flyout.is-detached::after {
+  display: none;
+}
+
+.basic-tool-flyout.dragging {
+  user-select: none;
+  box-shadow: inset 0 0 18px rgba(0, 229, 255, 0.18), 0 12px 30px rgba(0, 0, 0, 0.42);
+}
+
 .flyout-fly {
   --flyout-offset: 38px;
 }
@@ -409,7 +708,29 @@ const handleClearRoam = () => {
 
 .flyout-roam {
   --flyout-offset: 114px;
-  width: min(318px, calc(100vw - 24px));
+  width: min(390px, calc(100vw - 24px));
+  max-height: calc(100vh - 82px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-color: rgba(100, 213, 228, 0.42) rgba(0, 0, 0, 0.12);
+  scrollbar-width: thin;
+}
+
+.flyout-roam::-webkit-scrollbar {
+  width: 5px;
+}
+
+.flyout-roam::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.flyout-roam::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(100, 213, 228, 0.42);
+}
+
+.flyout-roam::after {
+  display: none;
 }
 
 .basic-tool-flyout::after {
@@ -435,6 +756,40 @@ const handleClearRoam = () => {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+
+.flyout-title.drag-handle {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  padding-right: 34px;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+
+.flyout-title.drag-handle::after {
+  content: '\62d6\62fd';
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  padding: 1px 4px;
+  border: 1px solid rgba(0, 229, 255, 0.2);
+  border-radius: 3px;
+  color: rgba(190, 245, 250, 0.7);
+  background: rgba(0, 229, 255, 0.055);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transform: translateY(-50%);
+}
+
+.flyout-title.drag-handle:hover {
+  border-color: rgba(0, 229, 255, 0.42);
+  background: linear-gradient(90deg, rgba(0, 229, 255, 0.13), rgba(0, 229, 255, 0.02) 100%);
+  box-shadow: inset 0 0 12px rgba(0, 229, 255, 0.06);
+}
+
+.basic-tool-flyout.dragging .flyout-title.drag-handle {
+  cursor: grabbing;
 }
 
 .flyout-title::before {
@@ -642,6 +997,372 @@ const handleClearRoam = () => {
   gap: 7px;
 }
 
+.roam-source-panel {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(92, 210, 230, 0.16);
+  border-radius: 6px;
+  background:
+    linear-gradient(135deg, rgba(0, 229, 255, 0.045), transparent 56%),
+    rgba(0, 9, 17, 0.24);
+  transition: border-color 0.18s ease, background 0.18s ease, box-shadow 0.18s ease;
+}
+
+.roam-source-panel.drop-active {
+  border-color: rgba(100, 232, 221, 0.68);
+  background:
+    linear-gradient(135deg, rgba(47, 211, 181, 0.13), transparent 62%),
+    rgba(0, 19, 25, 0.54);
+  box-shadow: inset 0 0 18px rgba(64, 224, 205, 0.08);
+}
+
+.roam-source-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.roam-source-head > span {
+  color: #e6fbff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.roam-source-head small {
+  color: #6f9aa5;
+  font-family: "Cascadia Mono", "Courier New", monospace;
+  font-size: 9px;
+}
+
+.roam-source-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.source-btn {
+  display: flex;
+  min-width: 0;
+  min-height: 38px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 0 5px;
+  border: 1px solid rgba(0, 229, 255, 0.17);
+  border-radius: 5px;
+  color: #a9ccd5;
+  background: rgba(0, 34, 47, 0.28);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+  transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.source-btn svg {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+}
+
+.source-btn path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.source-btn:hover:not(:disabled) {
+  border-color: rgba(92, 224, 214, 0.56);
+  color: #f0ffff;
+  background: rgba(0, 119, 137, 0.32);
+  transform: translateY(-1px);
+}
+
+.source-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.shapefile-requirement {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  color: #638d98;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.shapefile-requirement span:not(:first-child) {
+  margin-left: auto;
+}
+
+.shapefile-requirement code {
+  padding: 2px 3px;
+  border-radius: 3px;
+  color: #a9d9df;
+  background: rgba(80, 190, 204, 0.08);
+  font-family: "Cascadia Mono", "Courier New", monospace;
+  font-size: 9px;
+}
+
+.shapefile-loading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-top: 1px;
+  color: #9edce3;
+  font-size: 10px;
+}
+
+.shapefile-loading i {
+  width: 11px;
+  height: 11px;
+  border: 1px solid rgba(107, 229, 238, 0.22);
+  border-top-color: #72e4ec;
+  border-radius: 50%;
+  animation: shapefile-spin 0.8s linear infinite;
+}
+
+.shapefile-report {
+  display: grid;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid rgba(103, 227, 190, 0.24);
+  border-radius: 6px;
+  background:
+    linear-gradient(120deg, rgba(44, 196, 153, 0.075), transparent 52%),
+    rgba(0, 12, 18, 0.3);
+}
+
+.shapefile-report.report-error {
+  border-color: rgba(255, 143, 101, 0.3);
+  background:
+    linear-gradient(120deg, rgba(190, 78, 49, 0.1), transparent 52%),
+    rgba(17, 8, 9, 0.34);
+}
+
+.shapefile-report-head,
+.shapefile-report-head > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.shapefile-report-head {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.shapefile-report-head > div {
+  gap: 7px;
+}
+
+.report-status-icon {
+  display: inline-flex;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(103, 227, 190, 0.42);
+  border-radius: 50%;
+  color: #86f2c9;
+  background: rgba(57, 194, 151, 0.11);
+}
+
+.report-error .report-status-icon {
+  border-color: rgba(255, 143, 101, 0.45);
+  color: #ffae8e;
+  background: rgba(190, 78, 49, 0.12);
+}
+
+.report-status-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.report-status-icon path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.report-dataset {
+  overflow: hidden;
+  color: #eafff8;
+  font-size: 11px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shapefile-report-head > strong {
+  flex: 0 0 auto;
+  color: #72dfb7;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.report-error .shapefile-report-head > strong {
+  color: #f2a082;
+}
+
+.component-checks {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.component-check {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 3px;
+  color: #a4c2c9;
+  font-family: "Cascadia Mono", "Courier New", monospace;
+  font-size: 9px;
+}
+
+.component-check i {
+  flex: 0 0 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #65deb2;
+  box-shadow: 0 0 5px rgba(101, 222, 178, 0.48);
+}
+
+.component-check small {
+  overflow: hidden;
+  color: #587e88;
+  font-family: inherit;
+  font-size: 8px;
+  text-overflow: ellipsis;
+}
+
+.component-check.check-warning i {
+  background: #d7b86d;
+  box-shadow: 0 0 5px rgba(215, 184, 109, 0.42);
+}
+
+.component-check.check-error {
+  color: #ffad8c;
+}
+
+.component-check.check-error i {
+  background: #ff8f65;
+  box-shadow: 0 0 5px rgba(255, 143, 101, 0.48);
+}
+
+.crs-flow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px minmax(0, 0.78fr);
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-top: 1px solid rgba(94, 202, 216, 0.11);
+  border-bottom: 1px solid rgba(94, 202, 216, 0.11);
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.crs-flow > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.crs-flow span {
+  color: #5f8993;
+  font-size: 8px;
+}
+
+.crs-flow strong {
+  overflow: hidden;
+  color: #cbeef1;
+  font-family: "Cascadia Mono", "Courier New", monospace;
+  font-size: 9px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.crs-flow svg {
+  width: 34px;
+  height: 14px;
+  color: #5fcfca;
+}
+
+.crs-flow path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.shapefile-metrics {
+  display: grid;
+  grid-template-columns: 1fr 0.8fr 1fr;
+  gap: 6px;
+}
+
+.shapefile-metrics > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.shapefile-metrics small {
+  color: #5c8791;
+  font-size: 8px;
+}
+
+.shapefile-metrics strong {
+  overflow: hidden;
+  color: #d8f4f4;
+  font-family: "Cascadia Mono", "Courier New", monospace;
+  font-size: 9px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shapefile-warnings {
+  display: grid;
+  gap: 3px;
+}
+
+.shapefile-warnings p {
+  position: relative;
+  margin: 0;
+  padding-left: 9px;
+  overflow: hidden;
+  color: #c8b47c;
+  font-size: 9px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shapefile-warnings p::before {
+  position: absolute;
+  left: 1px;
+  top: 0.48em;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #d7b86d;
+  content: '';
+}
+
 .sys-btn.primary {
   border-color: rgba(108, 242, 190, 0.42);
   color: #edfff8;
@@ -667,6 +1388,12 @@ const handleClearRoam = () => {
   50% {
     opacity: 1;
     transform: scale(1.12);
+  }
+}
+
+@keyframes shapefile-spin {
+  to {
+    transform: rotate(360deg);
   }
 }
 

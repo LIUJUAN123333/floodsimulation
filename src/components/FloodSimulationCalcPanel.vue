@@ -11,6 +11,9 @@ type JsonFileItem = {
   show: boolean;
 };
 
+const PY_API_BASE = '/py-api';
+const pythonApiUrl = (path: string) => `${PY_API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+
 const props = defineProps<{
   viewer?: Cesium.Viewer | null;
 }>();
@@ -163,7 +166,7 @@ const fetchJsonFiles = async () => {
   message.value = 'Loading JSON files from Data_dx_5m...';
 
   try {
-    const listRes = await fetch('http://localhost:5000/simulation-results-list');
+    const listRes = await fetch(pythonApiUrl('/simulation-results-list'));
     const listJson = await listRes.json();
 
     if (!listRes.ok || !listJson.success) {
@@ -174,7 +177,7 @@ const fetchJsonFiles = async () => {
     const filesData: JsonFileItem[] = [];
 
     for (const name of fileNames) {
-      const fileRes = await fetch(`http://localhost:5000/simulation-result/${name}`);
+      const fileRes = await fetch(pythonApiUrl(`/simulation-result/${encodeURIComponent(name)}`));
       const fileText = await fileRes.text();
 
       let formatted = fileText;

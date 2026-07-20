@@ -138,6 +138,8 @@ const waitForFrames = async (frameCount: number) => {
   }
 };
 const MB = 1024 * 1024;
+const PY_API_BASE = '/py-api';
+const SHOWCASE_API_BASE = `${PY_API_BASE}/api/showcase`;
 const SHOWCASE_STATS_INTERVAL_FRAMES = 4;
 const SHOWCASE_UI_INTERVAL_FRAMES = 4;
 const SHOWCASE_FIRST_FRAME_WARMUP_FRAMES = 3;
@@ -338,6 +340,32 @@ const fetchShowcaseJson = async (url: string) => {
   } finally {
     activeShowcaseFetchControllers.delete(controller);
   }
+};
+
+const getShowcaseFileBaseUrl = (manifest: ShowcaseManifest, caseId: ShowcaseCaseId) => {
+  const fallbackBaseUrl = `${SHOWCASE_API_BASE}/${caseId}/file`;
+  const backendBaseUrl = manifest.fileBaseUrl?.replace(/\/+$/, '');
+
+  if (!backendBaseUrl) {
+    return fallbackBaseUrl;
+  }
+
+  try {
+    const url = new URL(backendBaseUrl, window.location.href);
+    const isLocalPythonBackend = ['localhost', '127.0.0.1'].includes(url.hostname) && url.port === '5000';
+
+    // 后端 manifest 在本地开发代理下会返回 http://localhost:5000/...。
+    // 这个地址只能在服务所在电脑访问；通过 Cloudflare/正式域名给外部用户访问时，
+    // 浏览器里的 localhost 会变成“访问者自己的电脑”，从而导致 ERR_CONNECTION_REFUSED。
+    // 因此凡是后端返回本机 Python 服务地址，都统一改走当前站点的相对代理路径。
+    if (isLocalPythonBackend) {
+      return fallbackBaseUrl;
+    }
+  } catch {
+    return backendBaseUrl;
+  }
+
+  return backendBaseUrl;
 };
 
 const getShowcasePlaybackOptions = (
@@ -1323,11 +1351,12 @@ const playShowcase = async (
 
   try {
     coordMessage.value = '正在读取案例数据...';
-    const manifestUrl = `/data/showcase/${caseId}/manifest.json`;
+    const manifestUrl = `${SHOWCASE_API_BASE}/${caseId}/manifest`;
     const manifest = await fetchJson(manifestUrl) as ShowcaseManifest;
     if (!manifest.success) {
       throw new Error(manifest.message || '案例清单读取失败');
     }
+    const showcaseFileBaseUrl = getShowcaseFileBaseUrl(manifest, caseId);
 
     await flyToCameraCenter(manifest.cameraCenter);
     if (!isPlaybackCurrent(token)) {
@@ -1338,7 +1367,7 @@ const playShowcase = async (
     if (manifest.center) {
       bounds = prepareFloodSceneFromManifest(manifest);
     } else if (manifest.ascFile) {
-      const ascText = await fetchText(`${manifest.fileBaseUrl}/${encodeFileName(manifest.ascFile)}`);
+      const ascText = await fetchText(`${showcaseFileBaseUrl}/${encodeFileName(manifest.ascFile)}`);
       bounds = prepareFloodScene(ascText, manifest.utmZone, manifest.name);
     } else {
       throw new Error('案例缺少 ASC 文件和中心点配置');
@@ -1346,7 +1375,7 @@ const playShowcase = async (
 
     const rawFloodUrls = manifest.floodUrls?.length
       ? manifest.floodUrls
-      : parseFloodUrlsFromXml(await fetchText(`${manifest.fileBaseUrl}/${encodeFileName(manifest.xmlFile)}`));
+      : parseFloodUrlsFromXml(await fetchText(`${showcaseFileBaseUrl}/${encodeFileName(manifest.xmlFile)}`));
     if (rawFloodUrls.length === 0) {
       throw new Error('案例 XML 中没有可播放的洪水帧，请检查 JSON 文件是否存在');
     }
@@ -1385,7 +1414,7 @@ const playShowcase = async (
     const jsonBaseDir = manifest.jsonBaseDir || manifest.xmlDir;
     let firstShowcasePrimitive: Cesium.Primitive | null = null;
     await renderPrefetchedFloodFrames(token, floodUrls, (url) => (
-      fetchShowcaseJson(`${manifest.fileBaseUrl}/${encodeFileName(joinRelativePath(jsonBaseDir, url))}`)
+      fetchShowcaseJson(`${showcaseFileBaseUrl}/${encodeFileName(joinRelativePath(jsonBaseDir, url))}`)
     ), playbackOptions, (primitive) => {
       if (!firstShowcasePrimitive) {
         firstShowcasePrimitive = primitive;
