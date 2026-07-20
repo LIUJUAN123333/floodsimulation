@@ -80,6 +80,23 @@ type ShowcaseManifest = {
   floodFrameSizes?: number[];
   totalJsonBytes?: number;
   maxJsonBytes?: number;
+  fullTotalJsonBytes?: number;
+  fullMaxJsonBytes?: number;
+  sampledJsonCount?: number;
+  fullJsonCount?: number;
+  isSampled?: boolean;
+  sampleStride?: number;
+  sampleMaxFrames?: number | null;
+  mode?: string;
+  samplingStrategy?: string;
+  bounds?: {
+    west: number;
+    east: number;
+    south: number;
+    north: number;
+    centerLon: number;
+    centerLat: number;
+  };
   fileBaseUrl: string;
   message?: string;
 };
@@ -864,7 +881,7 @@ const prepareFloodSceneFromManifest = (manifest: ShowcaseManifest): LonLatBounds
 
   removeCurrentFloodPrimitive();
 
-  return {
+  return manifest.bounds ?? {
     west: center.lon,
     east: center.lon,
     south: center.lat,
@@ -1379,7 +1396,14 @@ const playShowcase = async (
       throw new Error('案例 XML 中没有可播放的洪水帧，请检查 JSON 文件是否存在');
     }
 
-    const frameSelection = selectShowcaseFloodFrames(caseId, rawFloodUrls, manifest.floodFrameSizes);
+    const frameSelection = (manifest.isSampled || manifest.mode === 'full')
+      ? {
+        floodUrls: rawFloodUrls,
+        frameSizes: manifest.floodFrameSizes,
+        stride: manifest.sampleStride ?? 1,
+        originalCount: manifest.fullJsonCount ?? rawFloodUrls.length
+      }
+      : selectShowcaseFloodFrames(caseId, rawFloodUrls, manifest.floodFrameSizes);
     const floodUrls = frameSelection.floodUrls;
     const optimizedFrameSizes = frameSelection.frameSizes;
     const optimizedTotalBytes = optimizedFrameSizes?.reduce((sum, size) => sum + size, 0);
@@ -1405,10 +1429,14 @@ const playShowcase = async (
     const missingText = manifest.missingJsonCount ? `，跳过缺失 ${manifest.missingJsonCount} 帧` : '';
     const excludedText = manifest.excludedJsonCount ? `，剔除异常 ${manifest.excludedJsonCount} 帧` : '';
     const sizeText = formatBytes(optimizedTotalBytes ?? manifest.totalJsonBytes);
-    const optimizedText = frameSelection.stride > 1
+    const fullSizeText = formatBytes(manifest.fullTotalJsonBytes);
+    const sampledText = manifest.isSampled
+      ? `，演示抽帧 ${manifest.fullJsonCount ?? frameSelection.originalCount} → ${floodUrls.length} 帧${fullSizeText && fullSizeText !== sizeText ? `（原始约 ${fullSizeText}）` : ''}`
+      : '';
+    const clientOptimizedText = !manifest.isSampled && frameSelection.stride > 1
       ? `，分段抽帧 ${frameSelection.originalCount} → ${floodUrls.length} 帧`
       : '';
-    coordMessage.value = `正在缓冲 ${manifest.name}：逐帧播放 ${floodUrls.length} 帧${optimizedText}${sizeText ? `，约 ${sizeText}` : ''}${missingText}${excludedText}`;
+    coordMessage.value = `正在缓冲 ${manifest.name}：逐帧播放 ${floodUrls.length} 帧${sampledText || clientOptimizedText}${sizeText ? `，约 ${sizeText}` : ''}${missingText}${excludedText}`;
     const jsonBaseDir = manifest.jsonBaseDir || manifest.xmlDir;
     let firstShowcasePrimitive: Cesium.Primitive | null = null;
     await renderPrefetchedFloodFrames(token, floodUrls, (url) => (
