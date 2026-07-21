@@ -28,6 +28,7 @@ declare namespace DrawTriangleMesh {
     alpha?: number;
     heightScale?: number;
     surfaceOffset?: number;
+    depthTest?: boolean;
     terrainHeights?: ArrayLike<number>;
     colorRamp?: Array<string | [number, number, number]>;
     id?: string;
