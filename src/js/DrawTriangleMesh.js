@@ -253,11 +253,40 @@ import MultiColorTriangleAppearance from './Plugin/MultiColorTriangleAppearance.
             colors.set(color, index * 4);
         }
 
-        var indices = Cesium.IndexDatatype.createTypedArray(vertexCount, mesh.triangles.length);
-        for(index = 0; index < mesh.triangles.length; index += 3){
-            indices[index] = mesh.triangles[index + 2];
-            indices[index + 1] = mesh.triangles[index + 1];
-            indices[index + 2] = mesh.triangles[index];
+        var rawTriangles = Array.isArray(mesh.triangles) ? mesh.triangles : [];
+        var minTriangleIndex = Number.POSITIVE_INFINITY;
+        var maxTriangleIndex = Number.NEGATIVE_INFINITY;
+        for(index = 0; index < rawTriangles.length; index += 1){
+            var rawTriangleIndex = Number(rawTriangles[index]);
+            if(Number.isFinite(rawTriangleIndex)){
+                minTriangleIndex = Math.min(minTriangleIndex, rawTriangleIndex);
+                maxTriangleIndex = Math.max(maxTriangleIndex, rawTriangleIndex);
+            }
+        }
+        var triangleIndexOffset = minTriangleIndex >= 1 && maxTriangleIndex === vertexCount ? 1 : 0;
+        var safeIndices = [];
+        var skippedTriangleCount = 0;
+        for(index = 0; index + 2 < rawTriangles.length; index += 3){
+            var a = Number(rawTriangles[index]) - triangleIndexOffset;
+            var b = Number(rawTriangles[index + 1]) - triangleIndexOffset;
+            var c = Number(rawTriangles[index + 2]) - triangleIndexOffset;
+            if(
+                Number.isInteger(a) && Number.isInteger(b) && Number.isInteger(c) &&
+                a >= 0 && b >= 0 && c >= 0 &&
+                a < vertexCount && b < vertexCount && c < vertexCount &&
+                a !== b && b !== c && a !== c
+            ){
+                safeIndices.push(c, b, a);
+            }else{
+                skippedTriangleCount += 1;
+            }
+        }
+        if(skippedTriangleCount > 0){
+            console.warn('[DrawTriangleMesh] skipped invalid mesh triangles', skippedTriangleCount);
+        }
+        var indices = Cesium.IndexDatatype.createTypedArray(vertexCount, safeIndices.length);
+        for(index = 0; index < safeIndices.length; index += 1){
+            indices[index] = safeIndices[index];
         }
 
         var geometry = new Cesium.Geometry({
@@ -279,6 +308,7 @@ import MultiColorTriangleAppearance from './Plugin/MultiColorTriangleAppearance.
             boundingSphere : Cesium.BoundingSphere.fromVertices(packedPositions)
         });
 
+        var depthTestEnabled = options.depthTest === true;
         var primitive = new Cesium.Primitive({
             geometryInstances : new Cesium.GeometryInstance({
                 geometry : geometry,
@@ -290,7 +320,7 @@ import MultiColorTriangleAppearance from './Plugin/MultiColorTriangleAppearance.
                 translucent: alpha < 1,
                 renderState: {
                     depthTest: {
-                        enabled: true
+                        enabled: depthTestEnabled
                     },
                     depthMask: false,
                     blending: Cesium.BlendingState.ALPHA_BLEND

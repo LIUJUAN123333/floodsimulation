@@ -90,9 +90,12 @@ const isMeshPlaying = ref(false);
 const isMeshPreloading = ref(false);
 const meshPlaybackDockVisible = ref(false);
 const meshDepthLegendVisible = ref(true);
+const meshFolderInputRef = ref<HTMLInputElement | null>(null);
 let meshPlaybackTimer: number | undefined;
 const meshTerrainHeightCache = new Map<string, number>();
 const meshFrameCache = new Map<string, any>();
+const meshFrameFileMap = new Map<string, File>();
+const meshFrameBasenameFileMap = new Map<string, File[]>();
 const MAX_MESH_TERRAIN_HEIGHT_CACHE_ENTRIES = 150000;
 const MAX_MESH_FRAME_CACHE_ENTRIES = 1000;
 let meshPreloadPromise: Promise<void> | null = null;
@@ -393,7 +396,120 @@ const runOptimizedFloodSimulation = async () => {
   }
 };
 
+const normalizeMeshPath = (value: string) => String(value || '')
+  .replace(/^\uFEFF/, '')
+  .replace(/\\/g, '/')
+  .replace(/^\.\//, '')
+  .replace(/^\/+/, '');
+
+const getMeshBasename = (value: string) => {
+  const normalized = normalizeMeshPath(value);
+  return normalized.split('/').filter(Boolean).pop() || normalized;
+};
+
+const getMeshDirectory = (value: string) => {
+  const normalized = normalizeMeshPath(value);
+  const slashIndex = normalized.lastIndexOf('/');
+  return slashIndex >= 0 ? normalized.slice(0, slashIndex) : '';
+};
+
+const joinMeshPath = (directory: string, name: string) => {
+  const normalizedName = normalizeMeshPath(name);
+  if (!directory) return normalizedName;
+  return `${normalizeMeshPath(directory)}/${normalizedName}`;
+};
+
+const clearSelectedMeshFiles = () => {
+  meshFrameFileMap.clear();
+  meshFrameBasenameFileMap.clear();
+};
+
+const registerSelectedMeshFile = (file: File) => {
+  const relativePath = normalizeMeshPath(file.webkitRelativePath || file.name);
+  const lowerRelativePath = relativePath.toLowerCase();
+  const basename = getMeshBasename(relativePath);
+  const lowerBasename = basename.toLowerCase();
+  if (relativePath) {
+    meshFrameFileMap.set(relativePath, file);
+    meshFrameFileMap.set(lowerRelativePath, file);
+  }
+  if (basename) {
+    const files = meshFrameBasenameFileMap.get(lowerBasename) || [];
+    files.push(file);
+    meshFrameBasenameFileMap.set(lowerBasename, files);
+  }
+};
+
+const getMeshFrameCandidates = (frame: any) => {
+  const candidates = new Set<string>();
+  const rawCandidates = [
+    frame?.filePath,
+    ...(Array.isArray(frame?.fileCandidates) ? frame.fileCandidates : []),
+    frame?.url,
+    frame?.name
+  ];
+
+  rawCandidates.forEach((candidate) => {
+    if (!candidate) return;
+    const normalized = normalizeMeshPath(String(candidate));
+    if (!normalized) return;
+    candidates.add(normalized);
+    candidates.add(normalized.toLowerCase());
+  });
+
+  return Array.from(candidates);
+};
+
+const findSelectedMeshFile = (frameOrName: any) => {
+  const candidates = typeof frameOrName === 'string'
+    ? [normalizeMeshPath(frameOrName)]
+    : getMeshFrameCandidates(frameOrName);
+
+  for (const candidate of candidates) {
+    const file = meshFrameFileMap.get(candidate) || meshFrameFileMap.get(candidate.toLowerCase());
+    if (file) return file;
+  }
+
+  const basenameCandidates = candidates.map(getMeshBasename).filter(Boolean);
+  for (const basename of basenameCandidates) {
+    const files = meshFrameBasenameFileMap.get(basename.toLowerCase()) || [];
+    // Use basename fallback only when the selected folder has no duplicate frame names.
+    if (files.length === 1) return files[0];
+  }
+
+  return undefined;
+};
+
+const parseJsonFile = async (file: File) => JSON.parse((await file.text()).replace(/^﻿/, ''));
+
+const buildMeshFrameCandidatePaths = (indexDirectory: string, frame: any) => {
+  const candidates = new Set<string>();
+  const rawNames = [frame?.name, frame?.url].filter(Boolean).map((item) => normalizeMeshPath(String(item)));
+
+  rawNames.forEach((rawName) => {
+    if (!rawName) return;
+    const basename = getMeshBasename(rawName);
+    candidates.add(rawName);
+    candidates.add(basename);
+    if (indexDirectory) {
+      candidates.add(joinMeshPath(indexDirectory, basename));
+      candidates.add(joinMeshPath(indexDirectory, rawName));
+    }
+  });
+
+  return Array.from(candidates);
+};
+
+const openMeshFolderPicker = () => {
+  meshFolderInputRef.value?.click();
+};
+
 const pickMeshPath = async (field: 'source' | 'output' | 'folder') => {
+  if (field === 'folder') {
+    openMeshFolderPicker();
+    return;
+  }
+
   try {
     const response = await fetch('/api/select-folder', {
       method: 'POST',
@@ -411,17 +527,9 @@ const pickMeshPath = async (field: 'source' | 'output' | 'folder') => {
     const normalizedPath = String(result.path).replace(/\\/g, '/');
     if (field === 'source') meshSourceDir.value = normalizedPath;
     if (field === 'output') meshOutputDir.value = normalizedPath;
-    if (field === 'folder') {
-      meshFolder.value = normalizedPath;
-      await loadMeshAnimationFolder(normalizedPath);
-    }
   } catch (error) {
     const messageText = error instanceof Error ? error.message : String(error);
-    if (field === 'folder') {
-      meshStatus.value = `选择失败：${messageText}`;
-    } else {
-      meshConversionStatus.value = `选择失败：${messageText}`;
-    }
+    meshConversionStatus.value = `选择失败：${messageText}`;
   }
 };
 
@@ -483,13 +591,20 @@ const readMeshFrame = async (frame: any) => {
     return cachedMesh;
   }
 
-  const response = await fetch(
-    `/api/mesh-frame?folder=${encodeURIComponent(meshFolder.value)}&name=${encodeURIComponent(frame.name)}`
-  );
-  const mesh = await response.json();
-  if (!response.ok) {
-    throw new Error(mesh.error || 'Mesh 帧读取失败');
-  }
+  const selectedFile = findSelectedMeshFile(frame);
+  const mesh = selectedFile
+    ? await parseJsonFile(selectedFile)
+    : await (async () => {
+      const response = await fetch(
+        `/api/mesh-frame?folder=${encodeURIComponent(meshFolder.value)}&name=${encodeURIComponent(frame.name)}`
+      );
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || 'Mesh 帧读取失败');
+      }
+      return result;
+    })();
+
   if (!Array.isArray(mesh.positions) || !Array.isArray(mesh.values) || !Array.isArray(mesh.triangles)) {
     throw new Error('Mesh 帧缺少 positions、values 或 triangles 字段');
   }
@@ -658,7 +773,8 @@ const renderMeshFrame = async (frameIndex: number, shouldFly = false, sessionTok
       stats: mesh.stats || frame.stats,
       alpha: meshOpacity.value,
       heightScale: meshHeightScale.value,
-      surfaceOffset: 1.2,
+      surfaceOffset: 8,
+      depthTest: false,
       terrainHeights,
       colorRamp: MESH_COLOR_RAMPS[meshColorRamp.value] || MESH_COLOR_RAMPS.water
     });
@@ -693,37 +809,94 @@ const renderMeshFrame = async (frameIndex: number, shouldFly = false, sessionTok
   }
 };
 
-const loadMeshAnimationFolder = async (folder: string) => {
-  if (!folder) {
-    return;
-  }
+const prepareMeshFrames = async (folderLabel: string, frames: any[]) => {
+  meshFolder.value = folderLabel;
+  meshFrames.value = frames.sort((a: any, b: any) => Number(a.index) - Number(b.index));
+  resetFloodAreaSeries();
+  resetFloodPointDepthSeries();
+  await renderMeshFrame(0, true);
+  requestFloodAreaPanelOpen();
+  showMeshPlaybackDock();
+  void preloadMeshFrames(false);
+};
+
+const resetMeshLoadingState = () => {
   stopMeshPlayback();
   meshPreloadToken += 1;
   meshPreloadPromise = null;
   isMeshPreloading.value = false;
   meshFrameCache.clear();
+};
+
+const loadMeshAnimationFiles = async (files: File[]) => {
+  if (!files.length) {
+    return;
+  }
+
+  resetMeshLoadingState();
+  clearSelectedMeshFiles();
+
   try {
-    meshStatus.value = '正在读取 index.json...';
-    const response = await fetch('/api/mesh-index', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folder })
-    });
-    const result = await response.json();
-    if (!response.ok || !result.success) {
-      throw new Error(result.error || result.message || 'index.json 读取失败');
+    meshStatus.value = '正在读取本机 Mesh 文件夹...';
+    files.forEach(registerSelectedMeshFile);
+
+    const indexFiles = files
+      .filter((file) => getMeshBasename(file.webkitRelativePath || file.name).toLowerCase() === 'index.json')
+      .sort((a, b) => normalizeMeshPath(a.webkitRelativePath || a.name).split('/').length - normalizeMeshPath(b.webkitRelativePath || b.name).split('/').length);
+
+    if (!indexFiles.length) {
+      throw new Error('所选文件夹中未找到 index.json，请选择包含 index.json 和 *.mesh.json 的 Mesh 目录');
     }
-    meshFolder.value = result.folder;
-    meshFrames.value = result.frames.sort((a: any, b: any) => Number(a.index) - Number(b.index));
-    resetFloodAreaSeries();
-    resetFloodPointDepthSeries();
-    await renderMeshFrame(0, true);
-    requestFloodAreaPanelOpen();
-    showMeshPlaybackDock();
-    void preloadMeshFrames(false);
+
+    const candidates: Array<{ indexFile: File; frames: any[]; missingFrames: any[] }> = [];
+    for (const indexFile of indexFiles) {
+      try {
+        const indexJson = await parseJsonFile(indexFile);
+        if (!Array.isArray(indexJson.frames) || !indexJson.frames.length) {
+          continue;
+        }
+        const indexPath = normalizeMeshPath(indexFile.webkitRelativePath || indexFile.name);
+        const indexDirectory = getMeshDirectory(indexPath);
+        const frames = indexJson.frames.map((frame: any) => {
+          const displayName = getMeshBasename(String(frame.name || frame.url || ''));
+          return {
+            ...frame,
+            name: displayName,
+            fileCandidates: buildMeshFrameCandidatePaths(indexDirectory, frame)
+          };
+        });
+        const missingFrames = frames.filter((frame: any) => !findSelectedMeshFile(frame));
+        candidates.push({ indexFile, frames, missingFrames });
+      } catch {
+        // 继续尝试其他 index.json。
+      }
+    }
+
+    if (!candidates.length) {
+      throw new Error('index.json 中没有有效的 frames 索引');
+    }
+
+    const selected = candidates.find((candidate) => candidate.missingFrames.length === 0)
+      || candidates.sort((a, b) => a.missingFrames.length - b.missingFrames.length)[0];
+
+    if (selected.missingFrames.length) {
+      throw new Error(`所选目录缺少 ${selected.missingFrames.length} 个 Mesh 帧文件：${selected.missingFrames.slice(0, 5).map((frame: any) => frame.name).join('、')}${selected.missingFrames.length > 5 ? '...' : ''}`);
+    }
+
+    const firstPath = normalizeMeshPath(selected.indexFile.webkitRelativePath || selected.indexFile.name);
+    const folderLabel = firstPath.includes('/') ? getMeshDirectory(firstPath) || firstPath.split('/')[0] : '浏览器选择的 Mesh 文件夹';
+    await prepareMeshFrames(folderLabel, selected.frames);
   } catch (error) {
+    clearSelectedMeshFiles();
     meshStatus.value = `加载 Mesh 文件夹失败：${error instanceof Error ? error.message : String(error)}`;
   }
+};
+
+const handleMeshFolderInputChange = async (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const selectedFiles = Array.from(input.files || []);
+  await loadMeshAnimationFiles(selectedFiles);
+  input.value = '';
 };
 
 const toggleMeshPlayback = async () => {
@@ -873,6 +1046,7 @@ const clearMeshFlood = () => {
   meshPreloadPromise = null;
   isMeshPreloading.value = false;
   meshFrameCache.clear();
+  clearSelectedMeshFiles();
   removeMeshFlood();
   meshFileName.value = '尚未选择 Mesh 文件夹';
   meshPointCount.value = 0;
@@ -1674,8 +1848,17 @@ onBeforeUnmount(() => {
           <div class="panel-content render-flood-content">
             <label class="form-label">Mesh 文件夹</label>
             <div class="path-row">
-              <input class="form-control" type="text" v-model="meshFolder" placeholder="选择包含 index.json 的目录" />
-              <button class="btn btn-secondary path-btn" @click="pickMeshPath('folder')">浏览</button>
+              <input class="form-control" type="text" v-model="meshFolder" placeholder="选择包含 index.json 的目录" readonly />
+              <button class="btn btn-secondary path-btn" @click="openMeshFolderPicker">浏览</button>
+              <input
+                ref="meshFolderInputRef"
+                class="visually-hidden-file-input"
+                type="file"
+                webkitdirectory
+                directory
+                multiple
+                @change="handleMeshFolderInputChange"
+              />
             </div>
 
             <div class="mesh-stats">
@@ -2338,6 +2521,15 @@ onBeforeUnmount(() => {
 .path-row .form-control {
   flex: 1;
   min-width: 0;
+}
+
+.visually-hidden-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  clip-path: inset(50%);
 }
 
 .path-btn {
