@@ -68,10 +68,22 @@ const ROAD_DEFAULT_COLOR = Cesium.Color.fromCssColorString('#a9bed0');
 const ROAD_OUTLINE_COLOR = Cesium.Color.fromCssColorString('#102333');
 const ROAD_FLOODED_COLOR = Cesium.Color.fromCssColorString('#ff4f5f');
 const ROAD_SAFE_COLOR = Cesium.Color.fromCssColorString('#39dd8a');
+const BUILDING_FLOOD_DEPTH_THRESHOLD_M = 0.15;
+const BUILDING_MAX_RING_SAMPLE_POINTS = 8;
+const BUILDING_MAX_EDGE_SAMPLE_POINTS = 16;
+const BUILDING_INNER_SAMPLE_FACTOR = 0.45;
+const BUILDING_WET_VERTEX_SEARCH_RADIUS_M = 18;
+const BUILDING_EDGE_WET_VERTEX_SEARCH_RADIUS_M = 10;
+const ROAD_FLOOD_DEPTH_THRESHOLD_M = 0.15;
+const ROAD_SAMPLE_INTERVAL_M = 25;
+const ROAD_MAX_SAMPLE_POINTS_PER_LINE = 32;
+const ROAD_MIN_FLOODED_SAMPLE_RATIO = 0.3;
+const ROAD_WET_VERTEX_SEARCH_RADIUS_M = 12;
 const ROAD_WIDTH_PX = 2.2;
 const ROAD_MIN_WIDTH_PX = 1.1;
 const ROAD_NEAR_CAMERA_HEIGHT_M = 8000;
 const ROAD_FAR_CAMERA_HEIGHT_M = 80000;
+const VECTOR_DATA_FILE_ACCEPT = '.geojson,.json';
 const makeSvgDataUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
 const DEPTH_MARKER_IMAGE = makeSvgDataUrl(`
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="720" viewBox="0 0 160 180">
@@ -193,6 +205,13 @@ let markerViewer: Cesium.Viewer | null = null;
 let buildingLayerViewer: Cesium.Viewer | null = null;
 let previousDepthTestAgainstTerrain: boolean | null = null;
 let isPanelDisposed = false;
+
+type FloodWetVertexIndex = {
+  cellSizeDegrees: number;
+  buckets: Map<string, Array<{ lon: number; lat: number }>>;
+};
+
+const floodWetVertexIndexCache = new WeakMap<object, FloodWetVertexIndex>();
 
 const activeLayerConfig = computed<CaseLayerConfig | null>(() => (
   CASE_LAYER_CONFIGS[currentShowcaseCaseId.value ?? ''] ?? null
@@ -656,6 +675,66 @@ const getRoadLineStrings = (geometry?: RoadGeometry | null) => {
   return [];
 };
 
+const getRoadValidCoordinates = (line: number[][]) => (
+  line
+    .map((coordinate) => {
+      const longitude = Number(coordinate[0]);
+      const latitude = Number(coordinate[1]);
+      return Number.isFinite(longitude) && Number.isFinite(latitude)
+        ? { longitude, latitude }
+        : null;
+    })
+    .filter((coordinate): coordinate is { longitude: number; latitude: number } => coordinate !== null)
+);
+
+const getApproxDistanceMeters = (
+  start: { longitude: number; latitude: number },
+  end: { longitude: number; latitude: number }
+) => {
+  const latitudeMeters = 111_320;
+  const averageLatitude = (start.latitude + end.latitude) / 2;
+  const longitudeMeters = Math.max(1, Math.cos(Cesium.Math.toRadians(averageLatitude)) * latitudeMeters);
+  const dx = (end.longitude - start.longitude) * longitudeMeters;
+  const dy = (end.latitude - start.latitude) * latitudeMeters;
+  return Math.sqrt((dx * dx) + (dy * dy));
+};
+
+const getRoadSamplePoints = (line: number[][]) => {
+  const coordinates = getRoadValidCoordinates(line);
+  if (coordinates.length < 2) {
+    return coordinates;
+  }
+
+  const segmentLengths = coordinates.slice(1).map((coordinate, index) => (
+    getApproxDistanceMeters(coordinates[index], coordinate)
+  ));
+  const totalLengthM = segmentLengths.reduce((sum, length) => sum + length, 0);
+  const sampleIntervalM = Math.max(
+    ROAD_SAMPLE_INTERVAL_M,
+    totalLengthM / Math.max(1, ROAD_MAX_SAMPLE_POINTS_PER_LINE - 1)
+  );
+  const points: Array<{ longitude: number; latitude: number }> = [coordinates[0]];
+
+  segmentLengths.forEach((segmentLengthM, index) => {
+    const start = coordinates[index];
+    const end = coordinates[index + 1];
+    if (!start || !end || segmentLengthM <= 0) {
+      return;
+    }
+
+    const stepCount = Math.max(1, Math.ceil(segmentLengthM / sampleIntervalM));
+    for (let step = 1; step <= stepCount; step += 1) {
+      const ratio = step / stepCount;
+      points.push({
+        longitude: start.longitude + ((end.longitude - start.longitude) * ratio),
+        latitude: start.latitude + ((end.latitude - start.latitude) * ratio)
+      });
+    }
+  });
+
+  return points;
+};
+
 const getRingCentroid = (ring: number[][]) => {
   let longitudeSum = 0;
   let latitudeSum = 0;
@@ -676,9 +755,115 @@ const getRingCentroid = (ring: number[][]) => {
     : null;
 };
 
+const getValidRingCoordinates = (ring: number[][]) => (
+  ring
+    .map((coordinate) => {
+      const longitude = Number(coordinate[0]);
+      const latitude = Number(coordinate[1]);
+      return Number.isFinite(longitude) && Number.isFinite(latitude)
+        ? { longitude, latitude }
+        : null;
+    })
+    .filter((coordinate): coordinate is { longitude: number; latitude: number } => coordinate !== null)
+);
+
+const getBuildingSamplePoints = (ring: number[][]) => {
+  const validCoordinates = getValidRingCoordinates(ring);
+  if (!validCoordinates.length) {
+    return [];
+  }
+
+  const points: Array<{ longitude: number; latitude: number }> = [];
+  const seen = new Set<string>();
+  const centroid = getRingCentroid(ring);
+  const addPoint = (point: { longitude: number; latitude: number } | null) => {
+    if (!point) {
+      return;
+    }
+    const key = `${point.longitude.toFixed(8)},${point.latitude.toFixed(8)}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      points.push(point);
+    }
+  };
+
+  addPoint(centroid);
+  if (!centroid) {
+    return points;
+  }
+
+  const sampleStep = Math.max(1, Math.ceil(validCoordinates.length / BUILDING_MAX_RING_SAMPLE_POINTS));
+  const addInnerPoint = (edgePoint: { longitude: number; latitude: number } | null) => {
+    if (!edgePoint) {
+      return;
+    }
+
+    addPoint({
+      longitude: centroid.longitude + (edgePoint.longitude - centroid.longitude) * BUILDING_INNER_SAMPLE_FACTOR,
+      latitude: centroid.latitude + (edgePoint.latitude - centroid.latitude) * BUILDING_INNER_SAMPLE_FACTOR
+    });
+  };
+
+  for (let index = 0; index < validCoordinates.length; index += sampleStep) {
+    addInnerPoint(validCoordinates[index]);
+    const next = validCoordinates[(index + 1) % validCoordinates.length];
+    if (next) {
+      addInnerPoint({
+        longitude: (validCoordinates[index].longitude + next.longitude) / 2,
+        latitude: (validCoordinates[index].latitude + next.latitude) / 2
+      });
+    }
+  }
+
+  return points;
+};
+
+const getBuildingEdgeSamplePoints = (ring: number[][]) => {
+  const validCoordinates = getValidRingCoordinates(ring);
+  if (!validCoordinates.length) {
+    return [];
+  }
+
+  const points: Array<{ longitude: number; latitude: number }> = [];
+  const seen = new Set<string>();
+  const addPoint = (point: { longitude: number; latitude: number } | null) => {
+    if (!point) {
+      return;
+    }
+    const key = `${point.longitude.toFixed(8)},${point.latitude.toFixed(8)}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      points.push(point);
+    }
+  };
+
+  const sampleStep = Math.max(1, Math.ceil(validCoordinates.length / BUILDING_MAX_EDGE_SAMPLE_POINTS));
+  for (let index = 0; index < validCoordinates.length; index += sampleStep) {
+    const current = validCoordinates[index];
+    const next = validCoordinates[(index + 1) % validCoordinates.length];
+    addPoint(current);
+    if (next) {
+      addPoint({
+        longitude: (current.longitude + next.longitude) / 2,
+        latitude: (current.latitude + next.latitude) / 2
+      });
+    }
+  }
+
+  return points;
+};
+
 const getFeatureProperties = (feature: BuildingFootprintFeature | RoadFeature) => (
   feature.properties ?? feature.attributes ?? {}
 );
+
+const getVectorFeatures = <T extends { geometry?: unknown }>(data: { features?: T[] } | T[] | null | undefined): T[] => {
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  return Array.isArray(data?.features) ? data.features : [];
+};
 
 const getBuildingExtrudedHeight = (feature: BuildingFootprintFeature) => {
   const properties = getFeatureProperties(feature);
@@ -818,10 +1003,180 @@ const hasUsableFloodFrame = (floodJson: any) => (
   (isCachedMeshFloodData(floodJson) || Boolean(DrawTriangleMesh.getCurrentModelMatrix()))
 );
 
+const getFloodWetVertexBucketKey = (lon: number, lat: number, cellSizeDegrees: number) => (
+  `${Math.floor(lon / cellSizeDegrees)},${Math.floor(lat / cellSizeDegrees)}`
+);
+
+const getFloodWetVertexIndex = (floodJson: any): FloodWetVertexIndex | null => {
+  if (!isCachedMeshFloodData(floodJson) || typeof floodJson !== 'object' || floodJson === null) {
+    return null;
+  }
+
+  const cached = floodWetVertexIndexCache.get(floodJson);
+  if (cached) {
+    return cached;
+  }
+
+  const positions = floodJson.positions as number[];
+  const values = floodJson.values as number[];
+  const cellSizeDegrees = BUILDING_WET_VERTEX_SEARCH_RADIUS_M / 111_320;
+  const buckets = new Map<string, Array<{ lon: number; lat: number }>>();
+
+  for (let index = 0; index < values.length; index += 1) {
+    const depthM = Number(values[index]) || 0;
+    if (depthM < BUILDING_FLOOD_DEPTH_THRESHOLD_M) {
+      continue;
+    }
+
+    const lon = Number(positions[index * 2]);
+    const lat = Number(positions[index * 2 + 1]);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) {
+      continue;
+    }
+
+    const key = getFloodWetVertexBucketKey(lon, lat, cellSizeDegrees);
+    const bucket = buckets.get(key);
+    if (bucket) {
+      bucket.push({ lon, lat });
+    } else {
+      buckets.set(key, [{ lon, lat }]);
+    }
+  }
+
+  const indexData = { cellSizeDegrees, buckets };
+  floodWetVertexIndexCache.set(floodJson, indexData);
+  return indexData;
+};
+
+const hasNearbyWetFloodVertex = (
+  point: { longitude: number; latitude: number },
+  floodJson: any,
+  radiusM = BUILDING_WET_VERTEX_SEARCH_RADIUS_M
+) => {
+  const indexData = getFloodWetVertexIndex(floodJson);
+  if (!indexData) {
+    return true;
+  }
+
+  const centerX = Math.floor(point.longitude / indexData.cellSizeDegrees);
+  const centerY = Math.floor(point.latitude / indexData.cellSizeDegrees);
+  const radiusSquared = radiusM * radiusM;
+  const latitudeMeters = 111_320;
+  const longitudeMeters = Math.max(1, Math.cos(Cesium.Math.toRadians(point.latitude)) * latitudeMeters);
+
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dy = -1; dy <= 1; dy += 1) {
+      const bucket = indexData.buckets.get(`${centerX + dx},${centerY + dy}`);
+      if (!bucket) {
+        continue;
+      }
+
+      for (const vertex of bucket) {
+        const distanceX = (vertex.lon - point.longitude) * longitudeMeters;
+        const distanceY = (vertex.lat - point.latitude) * latitudeMeters;
+        if ((distanceX * distanceX) + (distanceY * distanceY) <= radiusSquared) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+};
+
+const isPointInRing = (point: { longitude: number; latitude: number }, ring: number[][]) => {
+  let inside = false;
+  const coordinates = getValidRingCoordinates(ring);
+  if (coordinates.length < 3) {
+    return false;
+  }
+
+  for (let i = 0, j = coordinates.length - 1; i < coordinates.length; j = i, i += 1) {
+    const current = coordinates[i];
+    const previous = coordinates[j];
+    const intersects = (
+      (current.latitude > point.latitude) !== (previous.latitude > point.latitude) &&
+      point.longitude < (
+        ((previous.longitude - current.longitude) * (point.latitude - current.latitude)) /
+        ((previous.latitude - current.latitude) || Number.EPSILON)
+      ) + current.longitude
+    );
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+};
+
+const isPointInPolygon = (point: { longitude: number; latitude: number }, polygon: number[][][]) => {
+  const outerRing = polygon[0];
+  if (!outerRing || !isPointInRing(point, outerRing)) {
+    return false;
+  }
+
+  return !polygon.slice(1).some((hole) => isPointInRing(point, hole));
+};
+
+const hasWetFloodVertexInsidePolygon = (polygon: number[][][], floodJson: any) => {
+  const indexData = getFloodWetVertexIndex(floodJson);
+  if (!indexData) {
+    return false;
+  }
+
+  let west = Number.POSITIVE_INFINITY;
+  let east = Number.NEGATIVE_INFINITY;
+  let south = Number.POSITIVE_INFINITY;
+  let north = Number.NEGATIVE_INFINITY;
+  polygon.forEach((ring) => {
+    getValidRingCoordinates(ring).forEach((coordinate) => {
+      west = Math.min(west, coordinate.longitude);
+      east = Math.max(east, coordinate.longitude);
+      south = Math.min(south, coordinate.latitude);
+      north = Math.max(north, coordinate.latitude);
+    });
+  });
+
+  if (![west, east, south, north].every(Number.isFinite)) {
+    return false;
+  }
+
+  const minX = Math.floor(west / indexData.cellSizeDegrees) - 1;
+  const maxX = Math.floor(east / indexData.cellSizeDegrees) + 1;
+  const minY = Math.floor(south / indexData.cellSizeDegrees) - 1;
+  const maxY = Math.floor(north / indexData.cellSizeDegrees) + 1;
+
+  for (let bucketX = minX; bucketX <= maxX; bucketX += 1) {
+    for (let bucketY = minY; bucketY <= maxY; bucketY += 1) {
+      const bucket = indexData.buckets.get(`${bucketX},${bucketY}`);
+      if (!bucket) {
+        continue;
+      }
+
+      for (const vertex of bucket) {
+        if (vertex.lon < west || vertex.lon > east || vertex.lat < south || vertex.lat > north) {
+          continue;
+        }
+
+        if (isPointInPolygon({ longitude: vertex.lon, latitude: vertex.lat }, polygon)) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return false;
+};
+
 const analyzeBuildingFootprintFlooding = (feature: BuildingFootprintFeature, floodJson: any) => {
   const polygons = getPolygonRings(feature.geometry);
   let maxDepthM = 0;
   let sampled = false;
+  let floodedSampleCount = 0;
+  let totalSampleCount = 0;
+  let edgeFloodedSampleCount = 0;
+  let totalEdgeSampleCount = 0;
+  let hasWetVertexInside = false;
 
   polygons.forEach((polygon) => {
     const outerRing = polygon[0];
@@ -829,25 +1184,69 @@ const analyzeBuildingFootprintFlooding = (feature: BuildingFootprintFeature, flo
       return;
     }
 
-    const centroid = getRingCentroid(outerRing);
-    if (!centroid) {
-      return;
+    if (hasWetFloodVertexInsidePolygon(polygon, floodJson)) {
+      hasWetVertexInside = true;
     }
 
-    const gridPoint = getFloodSamplePoint(centroid.longitude, centroid.latitude, floodJson);
-    if (!gridPoint) {
-      return;
-    }
+    getBuildingSamplePoints(outerRing).forEach((point) => {
+      const gridPoint = getFloodSamplePoint(point.longitude, point.latitude, floodJson);
+      if (!gridPoint) {
+        return;
+      }
 
-    const sample = sampleFloodDepthAtGridPoint(floodJson, gridPoint.x, gridPoint.y);
-    sampled = true;
-    maxDepthM = Math.max(maxDepthM, sample.depthM);
+      const sample = sampleFloodDepthAtGridPoint(floodJson, gridPoint.x, gridPoint.y);
+      if (sample.mode === 'outside') {
+        return;
+      }
+
+      sampled = true;
+      totalSampleCount += 1;
+      maxDepthM = Math.max(maxDepthM, sample.depthM);
+      if (
+        sample.depthM >= BUILDING_FLOOD_DEPTH_THRESHOLD_M &&
+        hasNearbyWetFloodVertex(point, floodJson)
+      ) {
+        floodedSampleCount += 1;
+      }
+    });
+
+    getBuildingEdgeSamplePoints(outerRing).forEach((point) => {
+      const gridPoint = getFloodSamplePoint(point.longitude, point.latitude, floodJson);
+      if (!gridPoint) {
+        return;
+      }
+
+      const sample = sampleFloodDepthAtGridPoint(floodJson, gridPoint.x, gridPoint.y);
+      if (sample.mode === 'outside') {
+        return;
+      }
+
+      sampled = true;
+      totalEdgeSampleCount += 1;
+      maxDepthM = Math.max(maxDepthM, sample.depthM);
+      if (
+        sample.depthM >= BUILDING_FLOOD_DEPTH_THRESHOLD_M &&
+        hasNearbyWetFloodVertex(point, floodJson, BUILDING_EDGE_WET_VERTEX_SEARCH_RADIUS_M)
+      ) {
+        edgeFloodedSampleCount += 1;
+      }
+    });
   });
 
+  const hasFloodedEdgeContact = edgeFloodedSampleCount > 0;
+  const requiredFloodedSamples = totalSampleCount <= 4
+    ? 1
+    : Math.max(2, Math.ceil(totalSampleCount * 0.3));
   return {
-    flooded: sampled && maxDepthM > 0,
+    flooded: hasWetVertexInside || hasFloodedEdgeContact || (sampled && floodedSampleCount >= requiredFloodedSamples),
     sampled,
-    depthM: maxDepthM
+    depthM: maxDepthM,
+    floodedSampleCount,
+    totalSampleCount,
+    edgeFloodedSampleCount,
+    totalEdgeSampleCount,
+    hasFloodedEdgeContact,
+    hasWetVertexInside
   };
 };
 
@@ -997,10 +1396,6 @@ const analyzeBuildingFlooding = async () => {
     let flooded = 0;
     buildingFeatureEntityRecords.forEach((record) => {
       const analysis = analyzeBuildingFootprintFlooding(record.feature, floodJson);
-      if (!analysis?.sampled) {
-        return;
-      }
-
       total += 1;
       if (analysis.flooded) {
         flooded += 1;
@@ -1025,33 +1420,68 @@ const analyzeBuildingFlooding = async () => {
   }
 };
 
+const isRoadExcludedFromSurfaceFlooding = (feature: RoadFeature) => {
+  const properties = getFeatureProperties(feature);
+  const bridge = String(properties.bridge ?? '').toUpperCase();
+  const tunnel = String(properties.tunnel ?? '').toUpperCase();
+  const layer = Number(properties.layer);
+  return bridge === 'T' || tunnel === 'T' || (Number.isFinite(layer) && layer > 0);
+};
+
 const analyzeRoadFeatureFlooding = (feature: RoadFeature, floodJson: any) => {
   let maxDepthM = 0;
   let sampled = false;
+  let floodedSampleCount = 0;
+  let totalSampleCount = 0;
+
+  if (isRoadExcludedFromSurfaceFlooding(feature)) {
+    return {
+      flooded: false,
+      sampled: true,
+      depthM: 0,
+      floodedSampleCount,
+      totalSampleCount,
+      requiredFloodedSamples: 0
+    };
+  }
 
   getRoadLineStrings(feature.geometry).forEach((line) => {
-    line.forEach((coordinate) => {
-      const longitude = Number(coordinate[0]);
-      const latitude = Number(coordinate[1]);
-      if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
+    getRoadSamplePoints(line).forEach((point) => {
+      totalSampleCount += 1;
+      sampled = true;
+
+      if (!hasNearbyWetFloodVertex(point, floodJson, ROAD_WET_VERTEX_SEARCH_RADIUS_M)) {
         return;
       }
 
-      const gridPoint = getFloodSamplePoint(longitude, latitude, floodJson);
+      const gridPoint = getFloodSamplePoint(point.longitude, point.latitude, floodJson);
       if (!gridPoint) {
         return;
       }
 
       const sample = sampleFloodDepthAtGridPoint(floodJson, gridPoint.x, gridPoint.y);
-      sampled = true;
+      if (sample.mode === 'outside') {
+        return;
+      }
+
       maxDepthM = Math.max(maxDepthM, sample.depthM);
+      if (sample.depthM >= ROAD_FLOOD_DEPTH_THRESHOLD_M) {
+        floodedSampleCount += 1;
+      }
     });
   });
 
+  const requiredFloodedSamples = totalSampleCount <= 4
+    ? 1
+    : Math.max(2, Math.ceil(totalSampleCount * ROAD_MIN_FLOODED_SAMPLE_RATIO));
+
   return {
-    flooded: sampled && maxDepthM > 0,
+    flooded: sampled && floodedSampleCount >= requiredFloodedSamples,
     sampled,
-    depthM: maxDepthM
+    depthM: maxDepthM,
+    floodedSampleCount,
+    totalSampleCount,
+    requiredFloodedSamples
   };
 };
 
@@ -1111,7 +1541,10 @@ const readGeoJsonFile = async <T,>(file: File): Promise<T> => {
   return JSON.parse(text) as T;
 };
 
-const isGeoJsonFile = (file: File) => file.name.toLowerCase().endsWith('.geojson');
+const isGeoJsonFile = (file: File) => {
+  const name = file.name.toLowerCase();
+  return name.endsWith('.geojson') || name.endsWith('.json');
+};
 
 const handleBuildingGeoJsonUpload = async (event: Event) => {
   const input = event.target as HTMLInputElement;
@@ -1138,11 +1571,12 @@ const handleBuildingGeoJsonUpload = async (event: Event) => {
   try {
     destroyOsmBuildings();
     const geojson = await readGeoJsonFile<BuildingFootprintCollection>(file);
+    const features = getVectorFeatures<BuildingFootprintFeature>(geojson);
     const dataSource = new Cesium.CustomDataSource(`uploaded_buildings_${Date.now()}`);
     let polygonCount = 0;
     const featureEntityRecords: BuildingFeatureEntityRecord[] = [];
 
-    geojson.features?.forEach((feature) => {
+    features.forEach((feature) => {
       const entities: Cesium.Entity[] = [];
       getPolygonRings(feature.geometry).forEach((polygon) => {
         const entity = addBuildingLayerEntity(dataSource, feature, polygon);
@@ -1204,11 +1638,12 @@ const handleRoadGeoJsonUpload = async (event: Event) => {
   try {
     destroyRoadLayer();
     const geojson = await readGeoJsonFile<RoadCollection>(file);
+    const features = getVectorFeatures<RoadFeature>(geojson);
     const dataSource = new Cesium.CustomDataSource(`uploaded_roads_${Date.now()}`);
     let lineCount = 0;
     const featureEntityRecords: RoadFeatureEntityRecord[] = [];
 
-    geojson.features?.forEach((feature) => {
+    features.forEach((feature) => {
       const entities: Cesium.Entity[] = [];
       getRoadLineStrings(feature.geometry).forEach((line) => {
         const entity = addRoadLayerEntity(dataSource, feature, line);
@@ -1305,11 +1740,12 @@ const toggleOsmBuildings = async () => {
       throw new Error(`建筑轮廓读取失败：${response.status}`);
     }
     const geojson = await response.json() as BuildingFootprintCollection;
+    const features = getVectorFeatures<BuildingFootprintFeature>(geojson);
     const dataSource = new Cesium.CustomDataSource(layerConfig.buildingDataSourceName);
     let polygonCount = 0;
     const featureEntityRecords: BuildingFeatureEntityRecord[] = [];
 
-    geojson.features.forEach((feature) => {
+    features.forEach((feature) => {
       if (cameraBounds && !isFeatureInCameraBounds(feature, cameraBounds)) {
         return;
       }
@@ -1393,11 +1829,12 @@ const toggleRoadLayer = async () => {
     }
 
     const geojson = await response.json() as RoadCollection;
+    const features = getVectorFeatures<RoadFeature>(geojson);
     const dataSource = new Cesium.CustomDataSource(layerConfig.roadDataSourceName);
     let lineCount = 0;
     const featureEntityRecords: RoadFeatureEntityRecord[] = [];
 
-    geojson.features.forEach((feature) => {
+    features.forEach((feature) => {
       if (cameraBounds && !isRoadFeatureInCameraBounds(feature, cameraBounds)) {
         return;
       }
@@ -1591,7 +2028,7 @@ onBeforeUnmount(() => {
       <p class="point-message layer-source">当前图层：{{ activeBuildingLayerLabel }}</p>
 
       <div class="point-toolbar building-toolbar">
-        <input ref="buildingUploadInputRef" class="asset-file-input-hidden" type="file" accept=".geojson" :disabled="buildingLayerLoading" @change="handleBuildingGeoJsonUpload" />
+        <input ref="buildingUploadInputRef" class="asset-file-input-hidden" type="file" :accept="VECTOR_DATA_FILE_ACCEPT" :disabled="buildingLayerLoading" @change="handleBuildingGeoJsonUpload" />
         <button type="button" class="point-btn primary" :disabled="buildingLayerLoading" @click="handleBuildingLayerAction">
           {{ buildingToggleLabel }}
         </button>
@@ -1617,7 +2054,7 @@ onBeforeUnmount(() => {
       <p class="point-message layer-source">当前图层：{{ activeRoadLayerLabel }}</p>
 
       <div class="point-toolbar building-toolbar">
-        <input ref="roadUploadInputRef" class="asset-file-input-hidden" type="file" accept=".geojson" :disabled="roadLayerLoading" @change="handleRoadGeoJsonUpload" />
+        <input ref="roadUploadInputRef" class="asset-file-input-hidden" type="file" :accept="VECTOR_DATA_FILE_ACCEPT" :disabled="roadLayerLoading" @change="handleRoadGeoJsonUpload" />
         <button type="button" class="point-btn primary" :disabled="roadLayerLoading" @click="handleRoadLayerAction">
           {{ roadToggleLabel }}
         </button>

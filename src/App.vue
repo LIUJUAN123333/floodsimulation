@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { computed, ref } from 'vue';
-import { EllipsoidTerrainProvider, createWorldTerrainAsync } from 'cesium';
+import { CesiumTerrainProvider, EllipsoidTerrainProvider } from 'cesium';
 
 import CesiumViewer from './components/CesiumViewer.vue';
 import BasicFunctionsPanel from './components/BasicFunctionsPanel.vue';
@@ -59,6 +59,8 @@ const showUI = ref(false);
 const showV0226CPanels = ref(false); // 新增：控制原V0226C面板的显示
 const simulationPanelMounted = ref(false);
 const systemTitle = '洪水动态模拟与三维可视化系统';
+const LOCAL_TERRAIN_URL = '/data/terrain/yongchuan-3blocks-qm/';
+let removeTerrainErrorListener: (() => void) | null = null;
 
 // ----------------- TopBar 面板控制 -----------------
 const panelVisible = ref(false);
@@ -194,23 +196,62 @@ const guardTerrainAvailability = (terrainProvider: any) => {
   return terrainProvider;
 };
 
+const detachTerrainErrorListener = () => {
+  removeTerrainErrorListener?.();
+  removeTerrainErrorListener = null;
+};
+
+const attachTerrainErrorFallback = (terrainProvider: any) => {
+  detachTerrainErrorListener();
+  const errorEvent = terrainProvider?.errorEvent;
+  if (typeof errorEvent?.addEventListener !== 'function') {
+    return;
+  }
+
+  const removeListener = errorEvent.addEventListener((error: unknown) => {
+    console.error('地形瓦片加载失败，已回退到椭球地形:', error);
+    if (!viewer.value || viewer.value.terrainProvider !== terrainProvider) {
+      return;
+    }
+
+    detachTerrainErrorListener();
+    viewer.value.terrainProvider = new EllipsoidTerrainProvider();
+    viewer.value.useDefaultRenderLoop = true;
+    terrainEnabled.value = false;
+  });
+
+  if (typeof removeListener === 'function') {
+    removeTerrainErrorListener = removeListener;
+  }
+};
+
+const createLocalTerrainProvider = async () => guardTerrainAvailability(await CesiumTerrainProvider.fromUrl(
+  LOCAL_TERRAIN_URL,
+  {
+    requestVertexNormals: true
+  }
+));
+
 const toggleTerrain = async (_event?: Event) => {
   if (!viewer.value || terrainSwitching.value) return;
   terrainSwitching.value = true;
   try {
     if (terrainEnabled.value) {
+      detachTerrainErrorListener();
       viewer.value.terrainProvider = new EllipsoidTerrainProvider();
       terrainEnabled.value = false;
       return;
     }
-    const worldTerrain = guardTerrainAvailability(await createWorldTerrainAsync());
-    viewer.value.terrainProvider = worldTerrain;
+    const terrainProvider = await createLocalTerrainProvider();
+    attachTerrainErrorFallback(terrainProvider);
+    viewer.value.terrainProvider = terrainProvider;
     viewer.value.useDefaultRenderLoop = true;
     await new Promise((resolve) => requestAnimationFrame(resolve));
     terrainEnabled.value = true;
   } catch (error) {
     console.error('切换地形失败:', error);
     if (viewer.value) {
+      detachTerrainErrorListener();
       viewer.value.terrainProvider = new EllipsoidTerrainProvider();
       viewer.value.useDefaultRenderLoop = true;
     }
@@ -223,6 +264,7 @@ const toggleTerrain = async (_event?: Event) => {
 const handleTerrainError = (error: unknown) => {
   console.error('地形渲染异常，已回退到椭球地形:', error);
   if (viewer.value) {
+    detachTerrainErrorListener();
     viewer.value.terrainProvider = new EllipsoidTerrainProvider();
     viewer.value.useDefaultRenderLoop = true;
   }
