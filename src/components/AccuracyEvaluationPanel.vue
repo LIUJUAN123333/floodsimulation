@@ -20,11 +20,14 @@ const props = withDefaults(defineProps<{
 type Point2D = { x: number; y: number };
 type LonLat = { lon: number; lat: number };
 type TriangleIndices = [number, number, number];
+type TriangleLonLat = [LonLat, LonLat, LonLat];
+type RingBounds = { west: number; east: number; south: number; north: number };
+type ParsedObservedPolygon = { outer: LonLat[]; holes: LonLat[][]; bounds: RingBounds };
 
 const EARTH_RADIUS_METERS = 6378137;
-const BOUNDARY_OFFSET_METERS = 12;
 const ACCURACY_BOUNDARY_SOURCE_NAME = 'accuracy-boundary-visualization';
-const ACCURACY_BOUNDARY_ENTITY_TAG = 'accuracy-boundary-outline';
+const OVERLAP_SAMPLE_DIVISIONS = 5;
+const OVERLAP_VISUALIZATION_MIN_FRACTION = 0.04;
 
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const observedFileName = ref('');
@@ -39,7 +42,6 @@ const loading = ref(false);
 const errorMessage = ref('');
 const boundariesVisible = ref(false);
 const boundaryDataSources: Cesium.GeoJsonDataSource[] = [];
-const boundaryOutlineEntities: Cesium.Entity[] = [];
 let boundaryVisualizationToken = 0;
 
 const lastAreaPoint = computed(() => {
@@ -168,23 +170,6 @@ async function toggleBoundaryVisualization() {
     }
     props.viewer.dataSources.add(observed);
     boundaryDataSources.push(observed);
-    await Promise.all([
-      addRaisedBoundaryOutlines(
-        observedGeoJson.value,
-        Cesium.Color.fromCssColorString('#ff2d2d'),
-        7,
-        BOUNDARY_OFFSET_METERS
-      ),
-      overlapGeoJson.value
-        ? addRaisedBoundaryOutlines(
-          overlapGeoJson.value,
-          Cesium.Color.fromCssColorString('#ffe600'),
-          5,
-          BOUNDARY_OFFSET_METERS + 2,
-          token
-        )
-        : Promise.resolve()
-    ]);
     if (token !== boundaryVisualizationToken || !props.viewer || !observedGeoJson.value) {
       clearBoundaryVisualization();
       return;
@@ -213,57 +198,6 @@ function clearAccuracyData() {
   errorMessage.value = '';
 }
 
-async function addRaisedBoundaryOutlines(
-  geoJson: any,
-  color: Cesium.Color,
-  width: number,
-  offsetMeters: number,
-  token = boundaryVisualizationToken
-) {
-  if (!props.viewer) return;
-
-  for (const ring of extractOuterRings(geoJson)) {
-    if (token !== boundaryVisualizationToken || !props.viewer) return;
-    const cartographics = ring.map(([lon, lat]) => Cesium.Cartographic.fromDegrees(lon, lat));
-    try {
-      await Cesium.sampleTerrain(props.viewer.terrainProvider, 12, cartographics);
-    } catch (error) {
-      console.warn('Boundary terrain sampling failed', error);
-    }
-
-    const positions = cartographics.map((position) => {
-      const loadedHeight = props.viewer?.scene.globe.getHeight(position);
-      const terrainHeight = Number.isFinite(position.height)
-        ? position.height
-        : Number.isFinite(loadedHeight)
-          ? Number(loadedHeight)
-          : 0;
-      return Cesium.Cartesian3.fromRadians(
-        position.longitude,
-        position.latitude,
-        terrainHeight + offsetMeters
-      );
-    });
-
-    if (token !== boundaryVisualizationToken || !props.viewer) return;
-    boundaryOutlineEntities.push(props.viewer.entities.add({
-      properties: {
-        source: ACCURACY_BOUNDARY_ENTITY_TAG
-      },
-      polyline: {
-        positions,
-        width,
-        clampToGround: false,
-        material: new Cesium.PolylineGlowMaterialProperty({
-          glowPower: 0.32,
-          taperPower: 0.7,
-          color
-        })
-      }
-    }));
-  }
-}
-
 function clearBoundaryVisualization() {
   boundaryVisualizationToken += 1;
   if (props.viewer) {
@@ -278,21 +212,8 @@ function clearBoundaryVisualization() {
         dataSources.remove(dataSource, true);
       }
     }
-
-    boundaryOutlineEntities.splice(0).forEach((entity) => {
-      props.viewer?.entities.remove(entity);
-    });
-
-    const entities = props.viewer.entities.values;
-    for (let index = entities.length - 1; index >= 0; index -= 1) {
-      const entity = entities[index];
-      if (entity.properties?.source?.getValue?.() === ACCURACY_BOUNDARY_ENTITY_TAG) {
-        props.viewer.entities.remove(entity);
-      }
-    }
   } else {
     boundaryDataSources.length = 0;
-    boundaryOutlineEntities.length = 0;
   }
   boundariesVisible.value = false;
 }
@@ -342,7 +263,11 @@ function getSimulationTriangles(floodData: any): number[] {
 function calculateSimulatedOverlap(floodData: any, observed: any) {
   const vertices = getSimulationVertices(floodData);
   const triangles = getSimulationTriangles(floodData);
+  const observedPolygons = parseObservedPolygons(observed);
   if (!vertices.length || !triangles.length) {
+    return { areaM2: 0, geoJson: null };
+  }
+  if (!observedPolygons.length) {
     return { areaM2: 0, geoJson: null };
   }
 
@@ -363,19 +288,52 @@ function calculateSimulatedOverlap(floodData: any, observed: any) {
     const c = vertices[cIndex];
     if (!a || !b || !c) continue;
 
-    const centroid = {
-      lon: (a.lon + b.lon + c.lon) / 3,
-      lat: (a.lat + b.lat + c.lat) / 3
-    };
-    if (!isPointInGeoJson(centroid, observed)) continue;
+    const triangle: TriangleLonLat = [a, b, c];
+    const coverageFraction = getTriangleObservedCoverageFraction(triangle, observedPolygons);
+    if (coverageFraction <= 0) continue;
 
-    overlapArea += triangleAreaM2(project(a), project(b), project(c));
-    overlapTriangles.push([aIndex, bIndex, cIndex]);
+    overlapArea += triangleAreaM2(project(a), project(b), project(c)) * coverageFraction;
+    if (coverageFraction >= OVERLAP_VISUALIZATION_MIN_FRACTION) {
+      overlapTriangles.push([aIndex, bIndex, cIndex]);
+    }
   }
 
   return {
     areaM2: Math.min(overlapArea, simulatedAreaM2.value, observedAreaM2.value),
     geoJson: buildSmoothedBoundaryGeoJson(vertices, overlapTriangles)
+  };
+}
+
+function getTriangleObservedCoverageFraction(triangle: TriangleLonLat, observedPolygons: ParsedObservedPolygon[]) {
+  let insideSamples = 0;
+  let totalSamples = 0;
+
+  for (let row = 0; row < OVERLAP_SAMPLE_DIVISIONS; row += 1) {
+    for (let column = 0; column < OVERLAP_SAMPLE_DIVISIONS - row; column += 1) {
+      const firstPoint = interpolateTrianglePoint(triangle, (row + 1 / 3) / OVERLAP_SAMPLE_DIVISIONS, (column + 1 / 3) / OVERLAP_SAMPLE_DIVISIONS);
+      totalSamples += 1;
+      if (isPointInParsedObservedPolygons(firstPoint, observedPolygons)) {
+        insideSamples += 1;
+      }
+
+      if (row + column < OVERLAP_SAMPLE_DIVISIONS - 1) {
+        const secondPoint = interpolateTrianglePoint(triangle, (row + 2 / 3) / OVERLAP_SAMPLE_DIVISIONS, (column + 2 / 3) / OVERLAP_SAMPLE_DIVISIONS);
+        totalSamples += 1;
+        if (isPointInParsedObservedPolygons(secondPoint, observedPolygons)) {
+          insideSamples += 1;
+        }
+      }
+    }
+  }
+
+  return totalSamples > 0 ? insideSamples / totalSamples : 0;
+}
+
+function interpolateTrianglePoint([a, b, c]: TriangleLonLat, aWeight: number, bWeight: number): LonLat {
+  const cWeight = 1 - aWeight - bWeight;
+  return {
+    lon: (a.lon * aWeight) + (b.lon * bWeight) + (c.lon * cWeight),
+    lat: (a.lat * aWeight) + (b.lat * bWeight) + (c.lat * cWeight)
   };
 }
 
@@ -560,42 +518,91 @@ function extractOuterRings(geoJson: any): Array<Array<[number, number]>> {
   return rings;
 }
 
+function parseObservedPolygons(geoJson: any): ParsedObservedPolygon[] {
+  const polygons: ParsedObservedPolygon[] = [];
+  const addPolygon = (coordinates: any) => {
+    if (!Array.isArray(coordinates) || !coordinates.length) return;
+
+    const outer = parseRing(coordinates[0]);
+    if (outer.length < 3) return;
+
+    const holes = coordinates
+      .slice(1)
+      .map((ring: any) => parseRing(ring))
+      .filter((ring: LonLat[]) => ring.length >= 3);
+    polygons.push({
+      outer,
+      holes,
+      bounds: getRingBounds(outer)
+    });
+  };
+
+  const visitGeometry = (geometry: any) => {
+    if (!geometry) return;
+    if (geometry.type === 'Polygon') {
+      addPolygon(geometry.coordinates);
+      return;
+    }
+    if (geometry.type === 'MultiPolygon') {
+      geometry.coordinates?.forEach(addPolygon);
+      return;
+    }
+    if (geometry.type === 'GeometryCollection') {
+      geometry.geometries?.forEach(visitGeometry);
+    }
+  };
+
+  if (geoJson?.type === 'FeatureCollection') geoJson.features?.forEach((feature: any) => visitGeometry(feature.geometry));
+  else if (geoJson?.type === 'Feature') visitGeometry(geoJson.geometry);
+  else visitGeometry(geoJson);
+  return polygons;
+}
+
+function getRingBounds(ring: LonLat[]): RingBounds {
+  return ring.reduce((bounds, point) => ({
+    west: Math.min(bounds.west, point.lon),
+    east: Math.max(bounds.east, point.lon),
+    south: Math.min(bounds.south, point.lat),
+    north: Math.max(bounds.north, point.lat)
+  }), {
+    west: Number.POSITIVE_INFINITY,
+    east: Number.NEGATIVE_INFINITY,
+    south: Number.POSITIVE_INFINITY,
+    north: Number.NEGATIVE_INFINITY
+  });
+}
+
+function isPointInParsedObservedPolygons(point: LonLat, polygons: ParsedObservedPolygon[]) {
+  return polygons.some((polygon) => {
+    if (
+      point.lon < polygon.bounds.west ||
+      point.lon > polygon.bounds.east ||
+      point.lat < polygon.bounds.south ||
+      point.lat > polygon.bounds.north
+    ) {
+      return false;
+    }
+
+    return isPointInRing(point, polygon.outer) &&
+      !polygon.holes.some((hole) => isPointInRing(point, hole));
+  });
+}
+
 function parseRing(coordinates: any[]) {
   return (Array.isArray(coordinates) ? coordinates : [])
     .map((coordinate) => ({ lon: Number(coordinate?.[0]), lat: Number(coordinate?.[1]) }))
     .filter((point) => Number.isFinite(point.lon) && Number.isFinite(point.lat));
 }
 
-function isPointInGeoJson(point: LonLat, geoJson: any): boolean {
-  const visitGeometry = (geometry: any): boolean => {
-    if (!geometry) return false;
-    if (geometry.type === 'Polygon') return isPointInPolygon(point, geometry.coordinates);
-    if (geometry.type === 'MultiPolygon') {
-      return (geometry.coordinates || []).some((polygon: any) => isPointInPolygon(point, polygon));
-    }
-    if (geometry.type === 'GeometryCollection') {
-      return (geometry.geometries || []).some(visitGeometry);
-    }
-    return false;
-  };
-
-  if (geoJson?.type === 'FeatureCollection') {
-    return (geoJson.features || []).some((feature: any) => visitGeometry(feature.geometry));
-  }
-  if (geoJson?.type === 'Feature') return visitGeometry(geoJson.geometry);
-  return visitGeometry(geoJson);
-}
-
-function isPointInPolygon(point: LonLat, rings: any[]) {
-  if (!Array.isArray(rings) || !rings.length) return false;
-  const outer = isPointInRing(point, parseRing(rings[0]));
-  const inHole = rings.slice(1).some((ring) => isPointInRing(point, parseRing(ring)));
-  return outer && !inHole;
-}
-
 function isPointInRing(point: LonLat, ring: LonLat[]) {
+  if (ring.length < 3) return false;
+
   let inside = false;
   for (let i = 0, j = ring.length - 1; i < ring.length; j = i, i += 1) {
+    if (isPointOnRingSegment(point, ring[j], ring[i])) {
+      return true;
+    }
+
     const xi = ring[i].lon;
     const yi = ring[i].lat;
     const xj = ring[j].lon;
@@ -605,6 +612,20 @@ function isPointInRing(point: LonLat, ring: LonLat[]) {
     if (intersect) inside = !inside;
   }
   return inside;
+}
+
+function isPointOnRingSegment(point: LonLat, start: LonLat, end: LonLat) {
+  const dx = end.lon - start.lon;
+  const dy = end.lat - start.lat;
+  const cross = ((point.lon - start.lon) * dy) - ((point.lat - start.lat) * dx);
+  const epsilon = 1e-10;
+  if (Math.abs(cross) > epsilon) return false;
+
+  const dot = ((point.lon - start.lon) * dx) + ((point.lat - start.lat) * dy);
+  if (dot < -epsilon) return false;
+
+  const segmentLengthSquared = (dx * dx) + (dy * dy);
+  return dot <= segmentLengthSquared + epsilon;
 }
 
 function getReferenceLatitude(points: LonLat[]) {
@@ -677,7 +698,6 @@ function formatArea(areaM2: number) {
 
     <div class="boundary-legend">
       <span><i class="observed"></i>灾后真实范围</span>
-      <span><i class="overlap"></i>模拟重叠范围</span>
     </div>
     <p v-if="observedFileName" class="sample-source">{{ observedFileName }}</p>
   </section>

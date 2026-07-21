@@ -71,6 +71,23 @@ let roamUiState: RoamUiState = createInitialRoamState();
 const emit = defineEmits(['viewer-ready', 'fly-complete', 'terrain-error', 'coordinates-change', 'roam-state-change']);
 
 const mousePosition = ref({ lon: '0.000000', lat: '0.000000', height: '0.00' });
+const YONGCHUAN_IMAGERY_RECTANGLE = Cesium.Rectangle.fromDegrees(
+  105.91845550696213,
+  29.425627967833694,
+  105.9518409625705,
+  29.452205640319157
+);
+const YONGCHUAN_LABEL_POSITION = {
+  lon: 105.943823,
+  lat: 29.445076,
+  height: 0
+};
+const makeSvgDataUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+const YONGCHUAN_PIN_IMAGE = makeSvgDataUrl(`
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+  <text x="48" y="70" text-anchor="middle" font-size="68" font-family="Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji, sans-serif">📌</text>
+</svg>
+`);
 
 const configureCameraControls = (viewerInstance: Viewer) => {
   const controller = viewerInstance.scene.screenSpaceCameraController;
@@ -78,6 +95,58 @@ const configureCameraControls = (viewerInstance: Viewer) => {
   controller.minimumZoomDistance = 40;
   controller.maximumZoomDistance = 28000000;
   controller.maximumMovementRatio = 0.035;
+};
+
+const addDefaultYongchuanImageryLayer = (viewerInstance: Viewer) => {
+  const imageryProvider = new Cesium.UrlTemplateImageryProvider({
+    url: '/data/imagery/yongchuan-3-l19/{z}/{x}/{y}.png',
+    tilingScheme: new Cesium.WebMercatorTilingScheme(),
+    rectangle: YONGCHUAN_IMAGERY_RECTANGLE,
+    minimumLevel: 0,
+    maximumLevel: 19,
+    credit: 'Yongchuan imagery'
+  });
+
+  const layer = viewerInstance.imageryLayers.addImageryProvider(imageryProvider);
+  layer.show = true;
+  layer.alpha = 0.88;
+  layer.brightness = 0.95;
+  layer.contrast = 0.9;
+  layer.saturation = 0.72;
+  layer.gamma = 1.06;
+};
+
+const addYongchuanLocationLabel = (viewerInstance: Viewer) => {
+  viewerInstance.entities.add({
+    name: '重庆市永川区茶山竹海街道',
+    position: Cesium.Cartesian3.fromDegrees(
+      YONGCHUAN_LABEL_POSITION.lon,
+      YONGCHUAN_LABEL_POSITION.lat,
+      YONGCHUAN_LABEL_POSITION.height
+    ),
+    billboard: {
+      image: YONGCHUAN_PIN_IMAGE,
+      width: 34,
+      height: 34,
+      heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+      horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+      verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY
+    },
+    label: {
+      text: '重庆市永川区茶山竹海街道',
+      font: '600 20px "Microsoft YaHei", sans-serif',
+      fillColor: Cesium.Color.WHITE,
+      outlineColor: Cesium.Color.fromCssColorString('#07111b'),
+      outlineWidth: 4,
+      style: Cesium.LabelStyle.FILL_AND_OUTLINE,
+      heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+      pixelOffset: new Cesium.Cartesian2(0, -38),
+      horizontalOrigin: Cesium.HorizontalOrigin.CENTER,
+      verticalOrigin: Cesium.VerticalOrigin.BOTTOM,
+      disableDepthTestDistance: Number.POSITIVE_INFINITY
+    }
+  });
 };
 
 onMounted(async () => {
@@ -112,6 +181,8 @@ onMounted(async () => {
     });
 
     configureCameraControls(viewer);
+    addDefaultYongchuanImageryLayer(viewer);
+    addYongchuanLocationLabel(viewer);
 
     // Initial far view (dark space) replacing setView to 10000000
     viewer.camera.setView({

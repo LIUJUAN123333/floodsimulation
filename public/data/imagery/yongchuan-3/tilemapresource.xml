@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<TileMap version = "1.0.0" tilemapservice = "http://tms.osgeo.org/1.0.0">
+	<Title>影像切片3</Title>
+	<SRS>EPSG:3857</SRS>
+	<BoundingBox miny="3.42993e+06" minx="1.17908e+07" maxy="3.43333e+06" maxx="1.17945e+07"/>
+	<Origin y="3.42993e+06" x="1.17908e+07"/>
+	<TileFormat width="256" height="256" mime-type="image/png" extension="png"/>
+	<TileSets profile="global-mercator">
+		<TileSet units-per-pixel="156543" order="0"/>
+		<TileSet units-per-pixel="78271.5" order="1"/>
+		<TileSet units-per-pixel="39135.8" order="2"/>
+		<TileSet units-per-pixel="19567.9" order="3"/>
+		<TileSet units-per-pixel="9783.94" order="4"/>
+		<TileSet units-per-pixel="4891.97" order="5"/>
+		<TileSet units-per-pixel="2445.98" order="6"/>
+		<TileSet units-per-pixel="1222.99" order="7"/>
+		<TileSet units-per-pixel="611.496" order="8"/>
+		<TileSet units-per-pixel="305.748" order="9"/>
+		<TileSet units-per-pixel="152.874" order="10"/>
+		<TileSet units-per-pixel="76.437" order="11"/>
+		<TileSet units-per-pixel="38.2185" order="12"/>
+		<TileSet units-per-pixel="19.1093" order="13"/>
+		<TileSet units-per-pixel="9.55463" order="14"/>
+		<TileSet units-per-pixel="4.77731" order="15"/>
+		<TileSet units-per-pixel="2.38866" order="16"/>
+		<TileSet units-per-pixel="1.19433" order="17"/>
+		<TileSet units-per-pixel="0.597164" order="18"/>
+	</TileSets>
+</TileMap>
