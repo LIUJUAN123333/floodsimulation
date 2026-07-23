@@ -70,6 +70,9 @@ const meshSourceDir = ref('');
 const meshOutputDir = ref('');
 const meshConversionStatus = ref('等待转换');
 const isConvertingMesh = ref(false);
+const meshJsonSourceInputRef = ref<HTMLInputElement | null>(null);
+const meshSourceFiles = ref<File[]>([]);
+const meshOutputDirHandle = ref<any>(null);
 const meshFolder = ref('');
 const meshFrames = ref<any[]>([]);
 const activeMeshFrameIndex = ref(0);
@@ -504,57 +507,149 @@ const openMeshFolderPicker = () => {
   meshFolderInputRef.value?.click();
 };
 
+const getClientFolderLabel = (files: File[]) => {
+  const firstPath = files[0]?.webkitRelativePath || files[0]?.name || '';
+  const rootName = normalizeMeshPath(firstPath).split('/').filter(Boolean)[0];
+  return rootName || '浏览器选择的 JSON 目录';
+};
+
+const openMeshJsonSourcePicker = () => {
+  meshJsonSourceInputRef.value?.click();
+};
+
+const pickMeshOutputDirectory = async () => {
+  if (!('showDirectoryPicker' in window)) {
+    meshOutputDirHandle.value = null;
+    meshOutputDir.value = '浏览器下载目录（ZIP）';
+    meshConversionStatus.value = '当前浏览器不支持直接选择输出目录，转换完成后将自动下载 ZIP 压缩包。';
+    return;
+  }
+
+  try {
+    const handle = await (window as any).showDirectoryPicker({ mode: 'readwrite' });
+    meshOutputDirHandle.value = handle;
+    meshOutputDir.value = handle?.name || '浏览器选择的输出目录';
+    meshConversionStatus.value = `已选择 Mesh 输出目录：${meshOutputDir.value}`;
+  } catch (error: any) {
+    if (error?.name !== 'AbortError') {
+      meshConversionStatus.value = `选择输出目录失败：${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+};
+
 const pickMeshPath = async (field: 'source' | 'output' | 'folder') => {
   if (field === 'folder') {
     openMeshFolderPicker();
     return;
   }
 
-  try {
-    const response = await fetch('/api/select-folder', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'dir' })
-    });
-    const result = await response.json();
-    if (!result.success) {
-      throw new Error(result.message || '选择目录失败');
-    }
-    if (!result.path) {
-      return;
-    }
-
-    const normalizedPath = String(result.path).replace(/\\/g, '/');
-    if (field === 'source') meshSourceDir.value = normalizedPath;
-    if (field === 'output') meshOutputDir.value = normalizedPath;
-  } catch (error) {
-    const messageText = error instanceof Error ? error.message : String(error);
-    meshConversionStatus.value = `选择失败：${messageText}`;
+  if (field === 'source') {
+    openMeshJsonSourcePicker();
+    return;
   }
+
+  await pickMeshOutputDirectory();
+};
+
+const handleMeshJsonSourceInputChange = (event: Event) => {
+  const input = event.target as HTMLInputElement;
+  const selectedFiles = Array.from(input.files || []);
+  const jsonFiles = selectedFiles.filter((file) => {
+    const name = file.name.toLowerCase();
+    return name.endsWith('.json') && !name.endsWith('.mesh.json');
+  });
+
+  meshSourceFiles.value = jsonFiles;
+  meshSourceDir.value = jsonFiles.length ? getClientFolderLabel(jsonFiles) : '';
+  meshConversionStatus.value = jsonFiles.length
+    ? `已选择 JSON 源目录：${meshSourceDir.value}，共 ${jsonFiles.length} 个 JSON 文件`
+    : '所选目录中未找到可转换的 JSON 文件';
+  input.value = '';
+};
+
+const writeBlobToDirectory = async (directoryHandle: any, fileName: string, blob: Blob) => {
+  const fileHandle = await directoryHandle.getFileHandle(fileName, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(blob);
+  await writable.close();
+};
+
+const saveMeshBuildFilesToClientDirectory = async (files: Array<{ name: string; url: string }>) => {
+  const directoryHandle = meshOutputDirHandle.value;
+  if (!directoryHandle) {
+    return false;
+  }
+
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    meshConversionStatus.value = `正在保存 Mesh 文件 ${index + 1} / ${files.length}：${file.name}`;
+    const response = await fetch(file.url);
+    if (!response.ok) {
+      throw new Error(`下载转换结果失败：${file.name}`);
+    }
+    await writeBlobToDirectory(directoryHandle, file.name, await response.blob());
+  }
+
+  return true;
+};
+
+const downloadMeshBuildArchive = async (archiveUrl: string, fileName = 'mesh-output.zip') => {
+  const response = await fetch(archiveUrl);
+  if (!response.ok) {
+    throw new Error('下载 Mesh 压缩包失败');
+  }
+
+  const blobUrl = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = blobUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(blobUrl);
+};
+
+const convertUploadedJsonToMesh = async () => {
+  const formData = new FormData();
+  meshSourceFiles.value.forEach((file) => {
+    formData.append('files', file, file.webkitRelativePath || file.name);
+  });
+
+  const response = await fetch('/api/build-mesh-upload', {
+    method: 'POST',
+    body: formData
+  });
+  const result = await response.json();
+
+  if (!response.ok || !result.success) {
+    throw new Error(result.error || result.message || 'Mesh 转换失败');
+  }
+
+  const outputFiles = Array.isArray(result.files) ? result.files : [];
+  if (!outputFiles.length) {
+    throw new Error('后端未返回可保存的 Mesh 输出文件');
+  }
+
+  const savedToDirectory = await saveMeshBuildFilesToClientDirectory(outputFiles);
+  if (!savedToDirectory) {
+    await downloadMeshBuildArchive(result.archiveUrl, result.archiveName || 'mesh-output.zip');
+  }
+
+  meshConversionStatus.value = savedToDirectory
+    ? `Mesh 转换完成，已保存 ${outputFiles.length} 个文件到：${meshOutputDir.value}`
+    : `Mesh 转换完成，已下载压缩包：${result.archiveName || 'mesh-output.zip'}`;
 };
 
 const convertJsonToMesh = async () => {
-  if (!meshSourceDir.value.trim() || !meshOutputDir.value.trim()) {
-    meshConversionStatus.value = '请选择 JSON 源目录和 Mesh 输出目录';
+  if (!meshSourceFiles.value.length) {
+    meshConversionStatus.value = '请选择 JSON 源目录';
     return;
   }
 
   isConvertingMesh.value = true;
-  meshConversionStatus.value = '正在转换 Mesh...';
+  meshConversionStatus.value = '正在上传 JSON 并转换 Mesh...';
   try {
-    const response = await fetch('/api/build-mesh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        sourceDir: meshSourceDir.value.trim(),
-        outputDir: meshOutputDir.value.trim()
-      })
-    });
-    const result = await response.json();
-    if (!response.ok || !result.success) {
-      throw new Error(result.error || result.message || 'Mesh 转换失败');
-    }
-    meshConversionStatus.value = result.message || 'Mesh 转换完成';
+    await convertUploadedJsonToMesh();
   } catch (error) {
     meshConversionStatus.value = `转换失败：${error instanceof Error ? error.message : String(error)}`;
   } finally {
@@ -1825,15 +1920,26 @@ onBeforeUnmount(() => {
           <div class="panel-content">
             <label class="form-label">JSON 源目录</label>
             <div class="path-row">
-              <input class="form-control" type="text" v-model="meshSourceDir" placeholder="选择包含 Flood*.json 的目录" />
+              <input class="form-control" type="text" v-model="meshSourceDir" placeholder="选择包含 Flood*.json 的目录" readonly />
               <button class="btn btn-secondary path-btn" @click="pickMeshPath('source')">浏览</button>
+              <input
+                ref="meshJsonSourceInputRef"
+                class="visually-hidden-file-input"
+                type="file"
+                accept=".json,application/json"
+                webkitdirectory
+                directory
+                multiple
+                @change="handleMeshJsonSourceInputChange"
+              />
             </div>
 
             <label class="form-label">Mesh 输出目录</label>
             <div class="path-row">
-              <input class="form-control" type="text" v-model="meshOutputDir" placeholder="选择 .mesh.json 输出目录" />
+              <input class="form-control" type="text" v-model="meshOutputDir" placeholder="选择 .mesh.json 输出目录" readonly />
               <button class="btn btn-secondary path-btn" @click="pickMeshPath('output')">浏览</button>
             </div>
+            <p class="form-help">远程访问时会在访问者自己的电脑上选择目录；若浏览器不支持输出目录写入，则自动下载 ZIP。</p>
 
             <button class="btn btn-primary" @click="convertJsonToMesh" :disabled="isConvertingMesh">
               {{ isConvertingMesh ? '正在转换...' : '开始转换' }}
@@ -2536,6 +2642,13 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   margin-top: 0;
   white-space: nowrap;
+}
+
+.form-help {
+  margin: -4px 0 12px;
+  color: rgba(203, 213, 225, 0.72);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .range-control {

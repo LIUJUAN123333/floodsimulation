@@ -249,7 +249,16 @@ const isAnalysisGroupExpanded = (id: AnalysisGroupId) => (
 const toggleAnalysisGroup = (id: AnalysisGroupId) => {
   const group = analysisGroups.value.find((item) => item.id === id);
   if (group) {
-    group.expanded = !group.expanded;
+    const shouldExpand = !group.expanded;
+    analysisGroups.value.forEach((item) => {
+      item.expanded = shouldExpand && item.id === id;
+    });
+    if (shouldExpand) {
+      void nextTick(() => {
+        const panel = analysisSidebarRef.value?.querySelector<HTMLElement>(`[data-analysis-group="${id}"]`);
+        panel?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      });
+    }
   }
 };
 
@@ -260,9 +269,11 @@ const isAnalysisGroupVisible = (id: AnalysisGroupId) => (
 const closeAnalysisGroup = (id: AnalysisGroupId) => {
   const group = analysisGroups.value.find((item) => item.id === id);
   if (group) {
+    group.expanded = false;
     group.visible = false;
   }
 };
+const analysisSidebarRef = ref<HTMLElement | null>(null);
 const latestDepthM = computed(() => latestDepthPoint.value?.depthM ?? currentFloodPointDepthM.value);
 
 const smoothDepthSeries = computed(() => {
@@ -1947,9 +1958,10 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="flood-analysis-panel">
+    <div v-if="panelReady" ref="analysisSidebarRef" class="analysis-sidebar" aria-label="灾情分析左侧面板组">
     <transition name="side-float-left" appear>
-    <div v-if="panelReady && isAnalysisGroupVisible('depth')" class="analysis-group analysis-depth" :class="{ expanded: isAnalysisGroupExpanded('depth') }">
-      <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('depth')">
+    <div v-if="isAnalysisGroupVisible('depth')" class="analysis-group analysis-depth" :class="{ expanded: isAnalysisGroupExpanded('depth') }" data-analysis-group="depth">
+      <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('depth')" @keydown.enter.prevent="toggleAnalysisGroup('depth')" @keydown.space.prevent="toggleAnalysisGroup('depth')">
         <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('depth') }">▶</span>
         <span>点位水深分析</span>
         <span class="analysis-group-spacer"></span>
@@ -2012,8 +2024,8 @@ onBeforeUnmount(() => {
     </transition>
 
     <transition name="side-float-left" appear>
-    <div v-if="panelReady && isAnalysisGroupVisible('assets')" class="analysis-group analysis-assets" :class="{ expanded: isAnalysisGroupExpanded('assets') }">
-      <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('assets')">
+    <div v-if="isAnalysisGroupVisible('assets')" class="analysis-group analysis-assets" :class="{ expanded: isAnalysisGroupExpanded('assets') }" data-analysis-group="assets">
+      <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('assets')" @keydown.enter.prevent="toggleAnalysisGroup('assets')" @keydown.space.prevent="toggleAnalysisGroup('assets')">
         <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('assets') }">▶</span>
         <span>承灾体淹没分析</span>
         <span class="analysis-group-spacer"></span>
@@ -2077,8 +2089,8 @@ onBeforeUnmount(() => {
     </transition>
 
     <transition name="side-float-left" appear>
-    <div v-if="panelReady && isAnalysisGroupVisible('accuracy')" class="analysis-group analysis-accuracy" :class="{ expanded: isAnalysisGroupExpanded('accuracy') }">
-      <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('accuracy')">
+    <div v-if="isAnalysisGroupVisible('accuracy')" class="analysis-group analysis-accuracy" :class="{ expanded: isAnalysisGroupExpanded('accuracy') }" data-analysis-group="accuracy">
+      <div class="analysis-group-header" role="button" tabindex="0" @click="toggleAnalysisGroup('accuracy')" @keydown.enter.prevent="toggleAnalysisGroup('accuracy')" @keydown.space.prevent="toggleAnalysisGroup('accuracy')">
         <span class="analysis-group-arrow" :class="{ expanded: isAnalysisGroupExpanded('accuracy') }">▶</span>
         <span>精度评价</span>
         <span class="analysis-group-spacer"></span>
@@ -2089,6 +2101,7 @@ onBeforeUnmount(() => {
       </div>
     </div>
     </transition>
+    </div>
   </section>
 </template>
 
@@ -2097,22 +2110,49 @@ onBeforeUnmount(() => {
   position: absolute;
   inset: 0;
   z-index: 910;
-  display: grid;
-  grid-template-columns: minmax(320px, 360px) minmax(360px, 1fr);
-  grid-template-rows: auto auto auto minmax(0, 1fr);
-  align-items: start;
-  gap: 14px 32px;
+  display: flex;
+  align-items: flex-start;
   padding: 90px 20px calc(var(--system-bottom-safe-space, 54px) + 24px);
+  overflow: hidden;
   pointer-events: none;
+}
+
+.analysis-sidebar {
+  width: min(360px, calc(100vw - 40px));
+  max-height: calc(100vh - var(--system-bottom-safe-space, 54px) - 114px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-right: 6px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  pointer-events: auto;
+  scroll-behavior: smooth;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 229, 255, 0.45) rgba(2, 13, 27, 0.35);
+}
+
+.analysis-sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.analysis-sidebar::-webkit-scrollbar-track {
+  border-radius: 999px;
+  background: rgba(2, 13, 27, 0.35);
+}
+
+.analysis-sidebar::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(0, 229, 255, 0.62), rgba(29, 122, 255, 0.34));
 }
 
 .analysis-group {
   position: relative;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   width: 100%;
-  max-height: calc(100vh - 150px);
   border: 1px solid var(--sys-border-color, rgba(0, 229, 255, 0.4));
   border-radius: 8px;
   background: var(--sys-glass-bg, rgba(13, 27, 49, 0.7));
@@ -2124,21 +2164,15 @@ onBeforeUnmount(() => {
 }
 
 .analysis-depth {
-  grid-column: 1;
-  grid-row: 1;
-  max-height: 38vh;
+  max-height: none;
 }
 
 .analysis-assets {
-  grid-column: 1;
-  grid-row: 2;
   max-height: none;
 }
 
 .analysis-accuracy {
-  grid-column: 1;
-  grid-row: 3;
-  max-height: calc(100vh - var(--system-bottom-safe-space, 54px) - 122px);
+  max-height: none;
 }
 
 .side-float-left-enter-active,
@@ -2285,6 +2319,10 @@ onBeforeUnmount(() => {
   min-height: 0;
   background: transparent;
   overflow-y: auto;
+}
+
+.analysis-group.expanded .analysis-group-content {
+  max-height: min(620px, calc(100vh - var(--system-bottom-safe-space, 54px) - 310px));
 }
 
 .metric-grid {
@@ -2596,21 +2634,26 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1280px) {
   .flood-analysis-panel {
-    grid-template-columns: minmax(300px, 340px) minmax(260px, 1fr);
-    gap: 14px 22px;
     padding-inline: 20px;
+  }
+
+  .analysis-sidebar {
+    width: min(340px, calc(100vw - 40px));
   }
 }
 
 @media (max-width: 980px) {
   .flood-analysis-panel {
     inset: 92px 12px var(--system-bottom-safe-space, 54px);
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
     padding: 0;
-    overflow-y: auto;
+    overflow: hidden;
     pointer-events: auto;
+  }
+
+  .analysis-sidebar {
+    width: 100%;
+    max-height: 100%;
+    padding-right: 0;
   }
 
   .analysis-group,
