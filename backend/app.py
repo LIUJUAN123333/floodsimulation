@@ -15,6 +15,45 @@ import uuid
 import zipfile
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
+
+BACKEND_ROOT = os.path.abspath(os.path.dirname(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.dirname(BACKEND_ROOT))
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(PROJECT_ROOT, '.env'))
+    load_dotenv(os.path.join(BACKEND_ROOT, '.env'))
+except ImportError:
+    # python-dotenv is optional. Environment variables can still be set by shell.
+    pass
+
+
+def resolve_project_path(env_names, default_relative_path):
+    """Resolve a configurable path relative to project root.
+
+    Team rule:
+    - default paths are relative to the repository root;
+    - local absolute paths should be placed in .env, never hard-coded in source.
+    """
+    if isinstance(env_names, str):
+        env_names = (env_names,)
+
+    for env_name in env_names:
+        configured = os.getenv(env_name, '').strip()
+        if configured:
+            return configured if os.path.isabs(configured) else os.path.abspath(os.path.join(PROJECT_ROOT, configured))
+
+    return os.path.abspath(os.path.join(PROJECT_ROOT, default_relative_path))
+
+
+def resolve_user_project_path(path_value):
+    """Resolve a user-provided path; relative values are based on project root."""
+    value = str(path_value or '').strip()
+    if not value:
+        return ''
+    value = os.path.expanduser(value)
+    return value if os.path.isabs(value) else os.path.abspath(os.path.join(PROJECT_ROOT, value))
+
 # 导入现有的处理模块
 from ASC文件获取粗糙度 import ascii_to_roughness_slope_based, calculate_ascii_bounds, get_boundary_roughness_values, get_ascii_values_by_coordinates, clip_ascii_by_polygon, set_utm_epsg, get_utm_epsg_from_tif
 from TIFF转ASC格式 import dem_to_ascii_gdal
@@ -22,8 +61,8 @@ from 地图瓦片行列号 import MapCoordinateConverter
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here'
 app.config['MAX_CONTENT_LENGTH'] = 2000 * 1024 * 1024  # 2000MB max file size
-app.config['UPLOAD_FOLDER'] = 'uploads'
-app.config['OUTPUT_FOLDER'] = 'outputs'
+app.config['UPLOAD_FOLDER'] = resolve_project_path('FLOOD_UPLOAD_FOLDER', os.path.join('backend', 'uploads'))
+app.config['OUTPUT_FOLDER'] = resolve_project_path('FLOOD_OUTPUT_FOLDER', os.path.join('backend', 'outputs'))
 
 @app.after_request
 def add_cors_headers(response):
@@ -41,8 +80,7 @@ MESH_OUTPUT_ROOT = os.path.abspath(os.path.join(app.config['OUTPUT_FOLDER'], 'me
 os.makedirs(MESH_UPLOAD_ROOT, exist_ok=True)
 os.makedirs(MESH_OUTPUT_ROOT, exist_ok=True)
 
-PROJECT_ROOT = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
-SHOWCASE_ROOT = os.path.join(PROJECT_ROOT, 'data_showcase')
+SHOWCASE_ROOT = resolve_project_path(('SHOWCASE_ROOT', 'FLOOD_SHOWCASE_ROOT'), 'data_showcase')
 SHOWCASE_CASES = {
     'jinshajiang': {
         'name': '金沙江',
@@ -732,9 +770,9 @@ def choose_path():
 def run_grid_to_tin():
     try:
         data = request.json or {}
-        dem_path = data.get('dem', '')
-        depth_dir = data.get('depth_dir', '')
-        output_dir = data.get('output_dir', '')
+        dem_path = resolve_user_project_path(data.get('dem', ''))
+        depth_dir = resolve_user_project_path(data.get('depth_dir', ''))
+        output_dir = resolve_user_project_path(data.get('output_dir', ''))
         
         script_path = os.path.join(os.path.dirname(__file__), 'grid_to_tin.py')
         

@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import vue from '@vitejs/plugin-vue';
 import cesium from 'vite-plugin-cesium';
 import { spawn } from 'node:child_process';
@@ -142,31 +142,47 @@ function meshLocalApi() {
   };
 }
 
+function normalizeTarget(value: string | undefined, fallback: string) {
+  return (value || fallback).trim().replace(/\/+$/, '');
+}
+
+function parsePort(value: string | undefined, fallback: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 // https://vitejs.dev/config/
-export default defineConfig({
-  plugins: [vue(), cesium(), meshLocalApi()],
-  server: {
-    host: '0.0.0.0',
-    port: 5174,
-    allowedHosts: true,
-    proxy: {
-      '/py-api': {
-        target: 'http://localhost:5000',
-        changeOrigin: true,
-        secure: false,
-        rewrite: (path) => path.replace(/^\/py-api/, '')
-      },
-      '/api': {
-        target: 'http://localhost:18080',
-        changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, '')
-      },
-      '/external-sim': {
-        target: 'http://localhost:18080',
-        changeOrigin: true,
-        secure: false,
-        rewrite: (path) => path.replace(/^\/external-sim/, '')
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '');
+  const frontendPort = parsePort(env.VITE_FRONTEND_PORT, 5174);
+  const pythonApiTarget = normalizeTarget(env.VITE_PY_API_TARGET, 'http://127.0.0.1:5000');
+  const cppApiTarget = normalizeTarget(env.VITE_CPP_API_TARGET, 'http://127.0.0.1:18080');
+
+  return {
+    plugins: [vue(), cesium(), meshLocalApi()],
+    server: {
+      host: '0.0.0.0',
+      port: frontendPort,
+      allowedHosts: true,
+      proxy: {
+        '/py-api': {
+          target: pythonApiTarget,
+          changeOrigin: true,
+          secure: false,
+          rewrite: (path) => path.replace(/^\/py-api/, '')
+        },
+        '/api': {
+          target: cppApiTarget,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/api/, '')
+        },
+        '/external-sim': {
+          target: cppApiTarget,
+          changeOrigin: true,
+          secure: false,
+          rewrite: (path) => path.replace(/^\/external-sim/, '')
+        }
       }
     }
-  }
+  };
 });

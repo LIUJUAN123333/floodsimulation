@@ -55,6 +55,12 @@ def dem_to_ascii_gdal(dem_file_path, output_asc_path=None):
         raise e
 
 if __name__ == "__main__":
-    input_dem = "C:/Users/19676/Desktop/项目地灾功能/灾后DEM.tif"
-    output_asc = "灾后dem转1.txt"
-    # result = dem_to_ascii_gdal(input_dem, output_asc)
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Convert DEM TIFF to ASCII grid.")
+    parser.add_argument("input_dem", help="Input DEM TIFF path")
+    parser.add_argument("output_asc", nargs="?", default=None, help="Output ASC path")
+    args = parser.parse_args()
+
+    result = dem_to_ascii_gdal(args.input_dem, args.output_asc)
+    print(result)

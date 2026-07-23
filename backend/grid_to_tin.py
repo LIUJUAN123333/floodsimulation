@@ -10,6 +10,9 @@ try:
 except ImportError:  # pragma: no cover - optional dependency
     cp = None  # CUDA acceleration will be disabled
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_GTT_ROOT = Path(os.getenv("GTT_WORKSPACE", PROJECT_ROOT / "output" / "grid_to_tin")).expanduser()
+
 
 def parse_dem(dem_path: Path) -> Tuple[np.ndarray, Dict[str, float]]:
     """Read DEM ASCII grid, returning height grid and header values."""
@@ -210,9 +213,9 @@ def sorted_depth_files(depth_dir: Path) -> List[Path]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Convert grid + depth TXT to TIN-style JSON and XML.")
-    parser.add_argument("--dem", type=Path, default=Path(r"D:/Chain1/gtt/TXT/dem.asc"), help="Path to DEM ASCII grid (.asc)")
-    parser.add_argument("--depth-dir", type=Path, default=Path(r"D:/Chain1/gtt/TXT"), help="Directory containing depth TXT files")
-    parser.add_argument("--output-dir", type=Path, default=Path(r"D:/Chain1/gtt/JSON"), help="Directory to write JSON outputs")
+    parser.add_argument("--dem", type=Path, default=DEFAULT_GTT_ROOT / "TXT" / "dem.asc", help="Path to DEM ASCII grid (.asc)")
+    parser.add_argument("--depth-dir", type=Path, default=DEFAULT_GTT_ROOT / "TXT", help="Directory containing depth TXT files")
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_GTT_ROOT / "JSON", help="Directory to write JSON outputs")
     parser.add_argument("--xml", type=Path, default=None, help="Path to summary XML (default: output-dir/Flood_New.xml)")
     parser.add_argument("--use-cuda", action="store_true", help="Try to use CuPy for acceleration if available")
     args = parser.parse_args()

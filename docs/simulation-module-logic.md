@@ -26,13 +26,13 @@
 系统代码路径：
 
 ```text
-D:\wenjian\FLOOD-SIMULATION\V0226C\V0226C
+<PROJECT_ROOT>
 ```
 
 模拟计算后端路径：
 
 ```text
-D:\wenjian\FLOOD-SIMULATION\FloodTest_parallel2024
+<PROJECT_ROOT>\FloodTest_parallel
 ```
 
 ## 2. 总体架构
@@ -66,7 +66,7 @@ Vue 前端界面
 仿真模拟模块的前端主要实现文件为：
 
 ```text
-V0226C/V0226C/src/components/DataProcessingPanel.vue
+src/components/DataProcessingPanel.vue
 ```
 
 该组件内部同时管理数据处理、模拟计算、JSON 转 Mesh 和洪水渲染状态。
@@ -155,7 +155,7 @@ http://localhost:18080/upload-all
 Vite 代理配置位于：
 
 ```text
-V0226C/V0226C/vite.config.ts
+vite.config.ts
 ```
 
 代理规则大致为：
@@ -435,7 +435,7 @@ POST /api/build-mesh
 实现位置：
 
 ```text
-V0226C/V0226C/vite.config.ts
+vite.config.ts
 ```
 
 前端传入：
