@@ -1395,9 +1395,9 @@ const handleRoughnessSubmit = async () => {
   }
 };
 
-const gttDemPath = ref('D:/Chain1/gtt/TXT/dem.asc');
-const gttDepthDir = ref('D:/Chain1/gtt/TXT');
-const gttOutputDir = ref('D:/Chain1/gtt/JSON');
+const gttDemPath = ref('');
+const gttDepthDir = ref('');
+const gttOutputDir = ref('');
 const gttRunning = ref(false);
 const gttMessage = ref('');
 
@@ -2051,19 +2051,19 @@ onBeforeUnmount(() => {
           <div class="panel-content">
             <label class="form-label">DEM 文件（dem.asc）路径：</label>
             <div style="display:flex; margin-bottom: 10px;">
-              <input class="form-control" type="text" v-model="gttDemPath" placeholder="D:/Chain1/gtt/TXT/dem.asc" style="flex:1; margin-right:5px;" />
+              <input class="form-control" type="text" v-model="gttDemPath" placeholder="请选择 dem.asc，或输入相对于项目根目录的路径" style="flex:1; margin-right:5px;" />
               <button class="btn btn-secondary" style="margin-top:0;" @click="pickPath('file', 'dem')">浏览文件</button>
             </div>
 
             <label class="form-label">水深 TXT 目录：</label>
             <div style="display:flex; margin-bottom: 10px;">
-              <input class="form-control" type="text" v-model="gttDepthDir" placeholder="D:/Chain1/gtt/TXT" style="flex:1; margin-right:5px;" />
+              <input class="form-control" type="text" v-model="gttDepthDir" placeholder="请选择水深 TXT 目录，或输入相对于项目根目录的路径" style="flex:1; margin-right:5px;" />
               <button class="btn btn-secondary" style="margin-top:0;" @click="pickPath('dir', 'depth')">浏览目录</button>
             </div>
 
             <label class="form-label">JSON 输出目录：</label>
             <div style="display:flex; margin-bottom: 15px;">
-              <input class="form-control" type="text" v-model="gttOutputDir" placeholder="D:/Chain1/gtt/JSON" style="flex:1; margin-right:5px;" />
+              <input class="form-control" type="text" v-model="gttOutputDir" placeholder="请选择 JSON 输出目录，或输入相对于项目根目录的路径" style="flex:1; margin-right:5px;" />
               <button class="btn btn-secondary" style="margin-top:0;" @click="pickPath('dir', 'output')">浏览目录</button>
             </div>
 
