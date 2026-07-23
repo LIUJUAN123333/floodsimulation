@@ -1646,4 +1646,9 @@ def polygon_clip():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # 默认关闭 Flask debug，避免演示/内网穿透部署时暴露调试模式。
+    # 如需本地开发调试，可在 PowerShell 中临时执行：$env:FLASK_DEBUG="1"
+    debug = os.environ.get('FLASK_DEBUG', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+    host = os.environ.get('HOST', '0.0.0.0')
+    port = int(os.environ.get('PORT', '5000'))
+    app.run(host=host, port=port, debug=debug)
