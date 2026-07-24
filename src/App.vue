@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import { CesiumTerrainProvider, EllipsoidTerrainProvider, createWorldTerrainAsync } from 'cesium';
 
 import CesiumViewer from './components/CesiumViewer.vue';
@@ -25,6 +25,18 @@ import {
   requestMeshRenderClose,
   resetFloodAreaSeries
 } from './store/floodState';
+import {
+  activeTerrainId,
+  activeTerrainSummary,
+  refreshLayerResources,
+  selectedTerrainResource,
+  selectedTerrainResourceId,
+  setActiveTerrainState,
+  setCurrentFloodExtent,
+  terrainResources,
+  type LayerBounds,
+  type TerrainResource
+} from './store/layerResourceStore';
 
 import LoadingScreen from './disaster-template/components/LoadingScreen.vue';
 import TopBar from './disaster-template/components/TopBar.vue';
@@ -38,7 +50,7 @@ const cesiumViewerRef = ref<any>(null); // 新增 Ref
 const floodLoaderRef = ref<InstanceType<typeof FloodLoader> | null>(null);
 const dataProcessingPanelRef = ref<InstanceType<typeof DataProcessingPanel> | null>(null);
 const viewer = ref<any>(null);
-const terrainEnabled = ref(false); // UI 开关：true 表示使用 Cesium 全球 DEM，false 表示使用本地 DEM
+const terrainEnabled = ref(false); // UI 开关：true 表示启用真实地形，false 表示无地形
 const terrainAvailable = ref(false); // 实际地形状态：true 表示当前不是椭球地形
 const terrainSwitching = ref(false);
 const roamState = ref<RoamUiState>(createInitialRoamState());
@@ -54,14 +66,23 @@ const riverRunoffTriggersFlood = ref(false);
 const riverRunoffEffectKey = ref(0);
 const floodRenderEffectEnabled = computed(() => riverRunoffEnabled.value && riverRunoffTriggersFlood.value);
 const effectiveRainstormEnabled = computed(() => rainstormEnabled.value || runoffRainstormActive.value);
+const terrainSwitchLabel = computed(() => {
+  if (terrainSwitching.value) return '切换中';
+  if (!terrainEnabled.value) return '无地形';
+  return terrainAvailable.value ? '真实地形' : '地形失败';
+});
+const terrainSwitchTitle = computed(() => (
+  terrainEnabled.value
+    ? `当前为 ${activeTerrainSummary.value}；关闭后切换到无地形`
+    : '当前为无地形；开启后使用已勾选地形，未勾选则使用 Cesium 全球地形'
+));
 
 const isMapReady = ref(false);
 const showUI = ref(false);
 const showV0226CPanels = ref(false); // 新增：控制原V0226C面板的显示
 const simulationPanelMounted = ref(false);
 const systemTitle = '洪水动态模拟与三维可视化系统';
-const LOCAL_TERRAIN_URL = '/data/terrain/yongchuan-3blocks-qm/';
-type TerrainSource = 'world' | 'local' | 'ellipsoid';
+type TerrainSource = 'world' | 'terrain-resource' | 'ellipsoid';
 let activeTerrainSource: TerrainSource = 'ellipsoid';
 let removeTerrainErrorListener: (() => void) | null = null;
 
@@ -70,6 +91,14 @@ const panelVisible = ref(false);
 const panelTitle = ref('');
 const panelSubtitle = ref('');
 const activePanelId = ref<string>('');
+type ShowcaseUiSnapshot = {
+  panelVisible: boolean;
+  panelTitle: string;
+  panelSubtitle: string;
+  activePanelId: string;
+  showV0226CPanels: boolean;
+};
+const showcaseUiSnapshot = ref<ShowcaseUiSnapshot | null>(null);
 
 const panelContents: Record<string, string> = {
   intro: '',
@@ -153,9 +182,10 @@ const onRoamStateChange = (state: RoamUiState) => {
   roamState.value = state;
 };
 
-const SAFE_TERRAIN_MAX_LEVEL = 13;
+const DEFAULT_TERRAIN_MAX_LEVEL = 13;
 
-const guardTerrainAvailability = (terrainProvider: any) => {
+const guardTerrainAvailability = (terrainProvider: any, maxLevel = DEFAULT_TERRAIN_MAX_LEVEL) => {
+  const safeMaxLevel = Math.max(0, Math.min(Math.round(Number(maxLevel) || DEFAULT_TERRAIN_MAX_LEVEL), 24));
   const availability = terrainProvider?.availability;
   const computeMaximumLevelAtPosition = availability?.computeMaximumLevelAtPosition;
   if (typeof computeMaximumLevelAtPosition === 'function') {
@@ -169,7 +199,7 @@ const guardTerrainAvailability = (terrainProvider: any) => {
           console.warn('地形可用层级数据异常，已使用安全层级继续加载。', error);
           hasWarnedAboutAvailability = true;
         }
-        return SAFE_TERRAIN_MAX_LEVEL;
+        return safeMaxLevel;
       }
     };
   }
@@ -182,7 +212,7 @@ const guardTerrainAvailability = (terrainProvider: any) => {
   const originalGetTileDataAvailable = getTileDataAvailable.bind(terrainProvider);
   let hasWarned = false;
   terrainProvider.getTileDataAvailable = (x: number, y: number, level: number) => {
-    if (level > SAFE_TERRAIN_MAX_LEVEL) {
+    if (level > safeMaxLevel) {
       return false;
     }
     try {
@@ -204,14 +234,15 @@ const detachTerrainErrorListener = () => {
   removeTerrainErrorListener = null;
 };
 
-const setEllipsoidTerrain = () => {
+const setEllipsoidTerrain = (enabledForUi = false) => {
   if (!viewer.value) return;
   detachTerrainErrorListener();
   viewer.value.terrainProvider = new EllipsoidTerrainProvider();
   viewer.value.useDefaultRenderLoop = true;
   activeTerrainSource = 'ellipsoid';
   terrainAvailable.value = false;
-  terrainEnabled.value = false;
+  terrainEnabled.value = enabledForUi;
+  setActiveTerrainState('ellipsoid', '无地形', 'ellipsoid');
 };
 
 const createWorldTerrainProvider = async () => guardTerrainAvailability(await createWorldTerrainAsync({
@@ -219,14 +250,19 @@ const createWorldTerrainProvider = async () => guardTerrainAvailability(await cr
   requestWaterMask: true
 }));
 
-const createLocalTerrainProvider = async () => guardTerrainAvailability(await CesiumTerrainProvider.fromUrl(
-  LOCAL_TERRAIN_URL,
+const createTerrainResourceProvider = async (resource: TerrainResource) => guardTerrainAvailability(await CesiumTerrainProvider.fromUrl(
+  resource.url,
   {
     requestVertexNormals: true
   }
-));
+), resource.maxzoom ?? DEFAULT_TERRAIN_MAX_LEVEL);
 
-const applyTerrainProvider = async (terrainProvider: any, source: TerrainSource, enabledForUi = source === 'world') => {
+const applyTerrainProvider = async (
+  terrainProvider: any,
+  source: TerrainSource,
+  label: string,
+  id: string
+) => {
   if (!viewer.value) return;
   attachTerrainErrorFallback(terrainProvider, source);
   viewer.value.terrainProvider = terrainProvider;
@@ -234,40 +270,85 @@ const applyTerrainProvider = async (terrainProvider: any, source: TerrainSource,
   await new Promise((resolve) => requestAnimationFrame(resolve));
   activeTerrainSource = source;
   terrainAvailable.value = source !== 'ellipsoid';
-  terrainEnabled.value = enabledForUi;
+  terrainEnabled.value = true;
+  setActiveTerrainState(id, label, source === 'world' ? 'world' : 'terrain-resource');
 };
 
 const enableWorldTerrain = async () => {
   if (!viewer.value) return;
   const terrainProvider = await createWorldTerrainProvider();
-  await applyTerrainProvider(terrainProvider, 'world', true);
+  await applyTerrainProvider(terrainProvider, 'world', 'Cesium 全球地形', 'world');
 };
 
-const enableLocalTerrain = async () => {
+const enableTerrainResource = async (resource: TerrainResource) => {
   if (!viewer.value) return;
-  const terrainProvider = await createLocalTerrainProvider();
-  await applyTerrainProvider(terrainProvider, 'local', false);
+  const terrainProvider = await createTerrainResourceProvider(resource);
+  await applyTerrainProvider(terrainProvider, 'terrain-resource', resource.name, resource.id);
+};
+
+const getDesiredTerrainResource = () => selectedTerrainResource.value;
+
+const applyTerrainForContext = async () => {
+  if (!viewer.value) return;
+  if (!terrainEnabled.value) {
+    setEllipsoidTerrain(false);
+    return;
+  }
+
+  const selectedResource = getDesiredTerrainResource();
+  const desiredId = selectedResource?.id ?? 'world';
+  if (activeTerrainId.value === desiredId && activeTerrainSource !== 'ellipsoid') {
+    return;
+  }
+
+  if (selectedResource) {
+    try {
+      await enableTerrainResource(selectedResource);
+      return;
+    } catch (error) {
+      console.warn(`地形切片 ${selectedResource.name} 加载失败，回退到 Cesium 全球地形:`, error);
+    }
+  }
+
+  await enableWorldTerrain();
+};
+
+const ensureTerrainForExtent = async (extent: LayerBounds | null) => {
+  setCurrentFloodExtent(extent);
+  if (!terrainEnabled.value || !viewer.value || terrainSwitching.value) return;
+  terrainSwitching.value = true;
+  try {
+    await applyTerrainForContext();
+  } catch (error) {
+    console.error('地形切换失败，已回退到无地形:', error);
+    setEllipsoidTerrain(true);
+  } finally {
+    terrainSwitching.value = false;
+  }
 };
 
 const fallbackAfterTerrainError = async (failedSource: TerrainSource, error: unknown) => {
   if (!viewer.value) return;
   detachTerrainErrorListener();
 
-  if (failedSource === 'world') {
-    console.warn('Cesium 全球地形加载失败，正在切换到本地 DEM 地形:', error);
-    try {
-      await enableLocalTerrain();
-      return;
-    } catch (localError) {
-      console.error('本地 DEM 地形也加载失败，已回退到椭球地形:', localError);
-    }
-  } else if (failedSource === 'local') {
-    console.error('本地 DEM 地形瓦片加载失败，已回退到椭球地形:', error);
-  } else {
-    console.error('地形加载失败，已回退到椭球地形:', error);
+  if (!terrainEnabled.value) {
+    setEllipsoidTerrain(false);
+    return;
   }
 
-  setEllipsoidTerrain();
+  if (failedSource !== 'world') {
+    console.warn('当前地形切片加载失败，正在切换到 Cesium 全球地形:', error);
+    try {
+      await enableWorldTerrain();
+      return;
+    } catch (worldError) {
+      console.error('Cesium 全球地形也加载失败，已回退到无地形:', worldError);
+    }
+  } else {
+    console.error('Cesium 全球地形加载失败，已回退到无地形:', error);
+  }
+
+  setEllipsoidTerrain(true);
 };
 
 const attachTerrainErrorFallback = (terrainProvider: any, source: TerrainSource) => {
@@ -292,17 +373,15 @@ const attachTerrainErrorFallback = (terrainProvider: any, source: TerrainSource)
 const initializeTerrain = async () => {
   if (!viewer.value || terrainSwitching.value) return;
   terrainSwitching.value = true;
+  terrainEnabled.value = true;
   try {
-    // 系统启动后默认加载 Cesium Ion 提供的全球 DEM，保证案例演示区域都有地形支撑。
-    await enableWorldTerrain();
-  } catch (error) {
-    console.warn('默认 Cesium 全球地形加载失败，尝试切换到本地 DEM 地形:', error);
-    try {
-      await enableLocalTerrain();
-    } catch (localError) {
-      console.error('默认地形加载失败，已回退到椭球地形:', localError);
-      setEllipsoidTerrain();
+    if (!terrainResources.value.length) {
+      await refreshLayerResources();
     }
+    await applyTerrainForContext();
+  } catch (error) {
+    console.error('默认真实地形加载失败，已回退到无地形:', error);
+    setEllipsoidTerrain(true);
   } finally {
     terrainSwitching.value = false;
   }
@@ -313,25 +392,15 @@ const toggleTerrain = async (_event?: Event) => {
   terrainSwitching.value = true;
   try {
     if (terrainEnabled.value) {
-      // 关闭左下角地形开关时，不再切到无高程椭球，而是切到项目内置的本地 DEM。
-      await enableLocalTerrain();
+      setEllipsoidTerrain(false);
       return;
     }
 
-    // 开启左下角地形开关时，直接使用 Cesium 提供的全球 DEM。
-    await enableWorldTerrain();
+    terrainEnabled.value = true;
+    await applyTerrainForContext();
   } catch (error) {
-    console.warn('地形切换失败，尝试使用备用地形:', error);
-    try {
-      if (terrainEnabled.value) {
-        await enableWorldTerrain();
-      } else {
-        await enableLocalTerrain();
-      }
-    } catch (fallbackError) {
-      console.error('备用地形也加载失败，已回退到椭球地形:', fallbackError);
-      setEllipsoidTerrain();
-    }
+    console.error('真实地形切换失败，已回退到无地形:', error);
+    setEllipsoidTerrain(true);
   } finally {
     terrainSwitching.value = false;
   }
@@ -340,6 +409,26 @@ const toggleTerrain = async (_event?: Event) => {
 const handleTerrainError = (error: unknown) => {
   void fallbackAfterTerrainError(activeTerrainSource, error);
 };
+
+onMounted(() => {
+  void refreshLayerResources();
+});
+
+watch(
+  selectedTerrainResourceId,
+  async () => {
+    if (!viewer.value || !terrainEnabled.value || terrainSwitching.value) return;
+    terrainSwitching.value = true;
+    try {
+      await applyTerrainForContext();
+    } catch (error) {
+      console.error('地形切换失败，已回退到无地形:', error);
+      setEllipsoidTerrain(true);
+    } finally {
+      terrainSwitching.value = false;
+    }
+  }
+);
 
 const onMenuSelect = (_id: string) => {};
 
@@ -372,9 +461,7 @@ const onRiverRunoffComplete = () => {
   if (!riverRunoffEnabled.value || !riverRunoffTriggersFlood.value || !floodLoaderRef.value) {
     return;
   }
-  panelVisible.value = false;
-  currentShowcaseCaseId.value = 'xiaojiaqiao';
-  void playShowcaseWithTerrain('xiaojiaqiao');
+  startShowcaseCase('xiaojiaqiao');
 };
 
 const onRiverRunoffRainstormChange = (active: boolean) => {
@@ -383,34 +470,73 @@ const onRiverRunoffRainstormChange = (active: boolean) => {
 
 type GalleryShowcaseCaseId = 'yongchuan' | 'jinshajiang' | 'xiaojiaqiao';
 
-const ensureShowcaseTerrain = async (caseId: GalleryShowcaseCaseId) => {
-  if (!viewer.value || terrainSwitching.value) return;
-  if (activeTerrainSource === 'world') return;
-
-  terrainSwitching.value = true;
-  try {
-    // 案例演示区域可能跨越永川、肖家桥、金沙江等不同空间范围，
-    // 因此优先使用 Cesium 全球地形，避免局部本地 DEM 覆盖不到导致洪水悬空。
-    await enableWorldTerrain();
-  } catch (error) {
-    console.error('案例演示切换 Cesium 全球地形失败:', error);
-    if (caseId === 'yongchuan') {
-      try {
-        await enableLocalTerrain();
-        return;
-      } catch (localError) {
-        console.error('永川本地 DEM 地形也加载失败，已回退到椭球地形:', localError);
-      }
-    }
-    setEllipsoidTerrain();
-  } finally {
-    terrainSwitching.value = false;
+const SHOWCASE_FLOOD_EXTENTS: Record<GalleryShowcaseCaseId, LayerBounds> = {
+  yongchuan: {
+    west: 105.91839551925659,
+    south: 29.42561388015747,
+    east: 105.95354318618774,
+    north: 29.453766345977783
+  },
+  xiaojiaqiao: {
+    west: 104.15,
+    south: 31.52,
+    east: 104.42,
+    north: 31.69
+  },
+  jinshajiang: {
+    west: 98.45,
+    south: 30.90,
+    east: 99.00,
+    north: 31.22
   }
+};
+
+const ensureShowcaseTerrain = async (caseId: GalleryShowcaseCaseId) => {
+  await ensureTerrainForExtent(SHOWCASE_FLOOD_EXTENTS[caseId]);
 };
 
 const playShowcaseWithTerrain = async (caseId: GalleryShowcaseCaseId) => {
   await ensureShowcaseTerrain(caseId);
   floodLoaderRef.value?.playShowcase(caseId);
+};
+
+const rememberShowcaseUiState = () => {
+  if (showcaseUiSnapshot.value) {
+    return;
+  }
+
+  showcaseUiSnapshot.value = {
+    panelVisible: panelVisible.value,
+    panelTitle: panelTitle.value,
+    panelSubtitle: panelSubtitle.value,
+    activePanelId: activePanelId.value,
+    showV0226CPanels: showV0226CPanels.value
+  };
+};
+
+const startShowcaseCase = (caseId: GalleryShowcaseCaseId) => {
+  rememberShowcaseUiState();
+  panelVisible.value = false;
+  currentShowcaseCaseId.value = caseId;
+  void playShowcaseWithTerrain(caseId);
+};
+
+const restoreShowcaseUiState = () => {
+  currentShowcaseCaseId.value = null;
+  const snapshot = showcaseUiSnapshot.value;
+  showcaseUiSnapshot.value = null;
+  if (!snapshot) {
+    return;
+  }
+
+  activePanelId.value = snapshot.activePanelId;
+  panelTitle.value = snapshot.panelTitle;
+  panelSubtitle.value = snapshot.panelSubtitle;
+  showV0226CPanels.value = snapshot.showV0226CPanels;
+  if (snapshot.activePanelId === 'simulation') {
+    simulationPanelMounted.value = true;
+  }
+  panelVisible.value = snapshot.panelVisible;
 };
 
 const onShowcase = (caseId: GalleryShowcaseCaseId) => {
@@ -419,16 +545,17 @@ const onShowcase = (caseId: GalleryShowcaseCaseId) => {
     return;
   }
 
-  panelVisible.value = false;
-  currentShowcaseCaseId.value = caseId;
-  void playShowcaseWithTerrain(caseId);
+  startShowcaseCase(caseId);
 };
 
 const resetFloodScene = () => {
   clearTimeout(hideTimeout);
+  showcaseUiSnapshot.value = null;
   floodPlaybackToken.value += 1;
   currentShowcaseCaseId.value = null;
   floodLoaderRef.value?.resetFloodData();
+  dataProcessingPanelRef.value?.clearMeshFlood();
+  requestFloodAreaPanelClose();
 
   if (viewer.value) {
     if (currentFloodPrimitive.value) {
@@ -442,6 +569,7 @@ const resetFloodScene = () => {
   floodCellSize.value = 0;
   resetFloodAreaSeries();
   clearFloodDepthMonitorPoint();
+  setCurrentFloodExtent(null);
   panelVisible.value = false;
   showV0226CPanels.value = false;
   activePanelId.value = '';
@@ -495,7 +623,13 @@ const onFlyComplete = () => { showUI.value = true; };
       @coordinates-change="onCoordinatesChange"
       @roam-state-change="onRoamStateChange"
     />
-    <FloodLoader v-if="viewer" ref="floodLoaderRef" class="showcase-flood-loader" :viewer="viewer" />
+    <FloodLoader
+      v-if="viewer"
+      ref="floodLoaderRef"
+      class="showcase-flood-loader"
+      :viewer="viewer"
+      @showcase-ended="restoreShowcaseUiState"
+    />
     <FloodAreaFloatingPanel v-if="showUI" />
     <RainstormEffect v-if="viewer" :viewer="viewer" :active="effectiveRainstormEnabled" />
     <RiverRunoffEffect
@@ -513,12 +647,12 @@ const onFlyComplete = () => { showUI.value = true; };
           <label
             class="terrain-switch"
             :class="{ active: terrainEnabled, disabled: !viewer || terrainSwitching }"
-            :title="terrainEnabled ? '当前为 Cesium 全球 DEM；关闭后切换到本地 DEM' : '当前为本地 DEM；开启后切换到 Cesium 全球 DEM'"
+            :title="terrainSwitchTitle"
             @click.stop
           >
             <span class="terrain-meta">
               <span class="terrain-status-dot" aria-hidden="true"></span>
-              <span class="switch-text">{{ terrainSwitching ? '切换中' : terrainEnabled ? '全球地形' : '本地地形' }}</span>
+              <span class="switch-text">{{ terrainSwitchLabel }}</span>
             </span>
             <input
               type="checkbox"
@@ -529,7 +663,11 @@ const onFlyComplete = () => { showUI.value = true; };
             <span class="slider"></span>
           </label>
           <span class="bottom-divider" aria-hidden="true"></span>
-          <BasicFunctionsPanel :cesium-viewer-ref="cesiumViewerRef" :roam-state="roamState" />
+          <BasicFunctionsPanel
+            :cesium-viewer-ref="cesiumViewerRef"
+            :viewer="viewer"
+            :roam-state="roamState"
+          />
         </div>
 
         <div class="bottom-coordinate-zone" aria-label="当前鼠标坐标" aria-live="polite">

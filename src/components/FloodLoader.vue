@@ -12,10 +12,12 @@ import {
   clearFloodDepthMonitorPoint,
   recordFloodAreaPoint,
   recordFloodPointDepth,
+  requestFloodAreaPanelClose,
   requestFloodAreaPanelOpen,
   resetFloodAreaSeries,
   resetFloodPointDepthSeries
 } from '../store/floodState';
+import { setCurrentFloodExtent } from '../store/layerResourceStore';
 import StyledFileInput from './StyledFileInput.vue';
 
 type Proj4Like = {
@@ -31,6 +33,10 @@ const props = defineProps({
     required: true
   }
 });
+
+const emit = defineEmits<{
+  (event: 'showcase-ended'): void;
+}>();
 
 defineOptions({
   inheritAttrs: false
@@ -576,18 +582,12 @@ const handleShowcasePause = () => {
 };
 
 const handleShowcaseStop = () => {
-  if (showcasePlayback.status === 'idle' || showcasePlayback.status === 'ended') {
+  if (showcasePlayback.status === 'idle' || !showcasePlayback.caseId) {
     return;
   }
 
-  nextPlaybackToken();
-  abortShowcaseFetches();
-  removeCurrentFloodPrimitive();
-  isLoading.value = false;
-  showcasePlayback.status = 'ended';
-  showcasePlayback.pendingSeekIndex = null;
-  showcasePlayback.pauseAfterNextFrame = false;
-  coordMessage.value = `${showcasePlayback.caseName || '案例'} 回放已结束`;
+  resetFloodData();
+  emit('showcase-ended');
 };
 
 const handleShowcaseClose = () => {
@@ -1023,12 +1023,15 @@ const resetFloodData = () => {
   removeCurrentFloodPrimitive();
   lastLoadedFloodJson.value = null;
   floodCellSize.value = 0;
+  requestFloodAreaPanelClose();
   resetFloodAreaSeries();
   clearFloodDepthMonitorPoint();
+  setCurrentFloodExtent(null);
   DrawTriangleMesh.setHeadingOffsetDegrees(0);
   isLoading.value = false;
   coordMessage.value = '';
   showcasePlayback.visible = false;
+  showcaseDepthLegendVisible.value = false;
   showcasePlayback.status = 'idle';
   showcasePlayback.caseId = null;
   currentShowcaseCaseId.value = null;
@@ -1567,7 +1570,7 @@ defineExpose({ playShowcase, resetFloodData });
             type="button"
             class="showcase-control-btn danger"
             @click="handleShowcaseStop"
-            :disabled="showcasePlayback.status === 'idle' || showcasePlayback.status === 'ended'"
+            :disabled="showcasePlayback.status === 'idle' || !showcasePlayback.caseId"
           >
             结束
           </button>

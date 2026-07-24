@@ -12,10 +12,20 @@ import {
   meshRenderCloseToken,
   recordFloodPointDepth,
   recordMeshAreaPoint,
+  requestFloodAreaPanelClose,
   requestFloodAreaPanelOpen,
   resetFloodAreaSeries,
-  resetFloodPointDepthSeries
+  resetFloodPointDepthSeries,
+  clearFloodDepthMonitorPoint,
+  currentShowcaseCaseId
 } from '../store/floodState';
+import {
+  activeTerrainId,
+  activeTerrainKind,
+  setCurrentFloodExtent,
+  terrainResources,
+  type LayerBounds
+} from '../store/layerResourceStore';
 
 const props = defineProps<{
   viewer?: Cesium.Viewer | null;
@@ -38,6 +48,12 @@ type MenuGroup = { name: string; expanded: boolean; children: MenuChild[] };
 
 const PY_API_BASE = '/py-api';
 const pythonApiUrl = (path: string) => `${PY_API_BASE}${path.startsWith('/') ? path : `/${path}`}`;
+const normalizePythonApiUrl = (url: string) => {
+  if (/^(https?:|blob:|data:)/i.test(url) || url.startsWith(PY_API_BASE)) {
+    return url;
+  }
+  return pythonApiUrl(url);
+};
 
 const activeItem = ref<string | null>(null);
 const convertFile = ref<File | null>(null);
@@ -583,7 +599,7 @@ const saveMeshBuildFilesToClientDirectory = async (files: Array<{ name: string; 
   for (let index = 0; index < files.length; index += 1) {
     const file = files[index];
     meshConversionStatus.value = `正在保存 Mesh 文件 ${index + 1} / ${files.length}：${file.name}`;
-    const response = await fetch(file.url);
+    const response = await fetch(normalizePythonApiUrl(file.url));
     if (!response.ok) {
       throw new Error(`下载转换结果失败：${file.name}`);
     }
@@ -594,7 +610,7 @@ const saveMeshBuildFilesToClientDirectory = async (files: Array<{ name: string; 
 };
 
 const downloadMeshBuildArchive = async (archiveUrl: string, fileName = 'mesh-output.zip') => {
-  const response = await fetch(archiveUrl);
+  const response = await fetch(normalizePythonApiUrl(archiveUrl));
   if (!response.ok) {
     throw new Error('下载 Mesh 压缩包失败');
   }
@@ -615,7 +631,7 @@ const convertUploadedJsonToMesh = async () => {
     formData.append('files', file, file.webkitRelativePath || file.name);
   });
 
-  const response = await fetch('/api/build-mesh-upload', {
+  const response = await fetch(pythonApiUrl('/api/build-mesh-upload'), {
     method: 'POST',
     body: formData
   });
@@ -761,14 +777,36 @@ const preloadMeshFrames = async (showStatus = true) => {
   return meshPreloadPromise;
 };
 
-const getMeshTerrainHeightCacheKey = (lon: number, lat: number) => `${lon.toFixed(9)},${lat.toFixed(9)}`;
+const getMeshTerrainHeightCacheKey = (lon: number, lat: number, sampleLevel: number) => (
+  `${activeTerrainId.value}:L${sampleLevel}:${lon.toFixed(9)},${lat.toFixed(9)}`
+);
 const MESH_TERRAIN_SAMPLE_BATCH_SIZE = 2000;
-const MESH_TERRAIN_SAMPLE_LEVEL = 13;
+const MESH_WORLD_TERRAIN_SAMPLE_LEVEL = 13;
 const MESH_TERRAIN_FALLBACK_LEVEL = 8;
+const MESH_LOCAL_TERRAIN_MAX_SAMPLE_LEVEL = 18;
+const MESH_TERRAIN_SURFACE_OFFSET = 4;
+const MESH_FLAT_SURFACE_OFFSET = 8;
 
 const isRealTerrainEnabled = () => {
   const terrainProvider = props.viewer?.terrainProvider;
   return !!props.terrainEnabled && !!terrainProvider && !(terrainProvider instanceof Cesium.EllipsoidTerrainProvider);
+};
+
+const getMeshTerrainSampleLevel = () => {
+  if (activeTerrainKind.value !== 'terrain-resource') {
+    return MESH_WORLD_TERRAIN_SAMPLE_LEVEL;
+  }
+
+  const resource = terrainResources.value.find((item) => item.id === activeTerrainId.value);
+  const maxzoom = Number(resource?.maxzoom);
+  if (!Number.isFinite(maxzoom)) {
+    return MESH_WORLD_TERRAIN_SAMPLE_LEVEL;
+  }
+
+  return Math.max(
+    MESH_TERRAIN_FALLBACK_LEVEL,
+    Math.min(Math.round(maxzoom), MESH_LOCAL_TERRAIN_MAX_SAMPLE_LEVEL)
+  );
 };
 
 const sampleMeshTerrainHeights = async (mesh: any) => {
@@ -779,6 +817,7 @@ const sampleMeshTerrainHeights = async (mesh: any) => {
   const vertexCount = Array.isArray(mesh.values) ? mesh.values.length : 0;
   const heights = new Float64Array(vertexCount);
   const missing: Array<{ index: number; key: string; cartographic: Cesium.Cartographic }> = [];
+  const sampleLevel = getMeshTerrainSampleLevel();
 
   for (let index = 0; index < vertexCount; index += 1) {
     const lon = Number(mesh.positions[index * 2]);
@@ -787,7 +826,7 @@ const sampleMeshTerrainHeights = async (mesh: any) => {
       continue;
     }
 
-    const key = getMeshTerrainHeightCacheKey(lon, lat);
+    const key = getMeshTerrainHeightCacheKey(lon, lat, sampleLevel);
     const cachedHeight = meshTerrainHeightCache.get(key);
     if (cachedHeight !== undefined) {
       heights[index] = cachedHeight;
@@ -814,7 +853,7 @@ const sampleMeshTerrainHeights = async (mesh: any) => {
       const positions = batch.map((item) => item.cartographic);
       const sampled = await Cesium.sampleTerrain(
         props.viewer.terrainProvider,
-        MESH_TERRAIN_SAMPLE_LEVEL,
+        sampleLevel,
         positions
       );
 
@@ -842,6 +881,53 @@ const sampleMeshTerrainHeights = async (mesh: any) => {
   return heights;
 };
 
+const getMeshLonLatExtent = (mesh: any, frame: any): LayerBounds | null => {
+  const stats = mesh?.stats || frame?.stats || {};
+  const statBounds = {
+    west: Number(stats.minX),
+    south: Number(stats.minY),
+    east: Number(stats.maxX),
+    north: Number(stats.maxY)
+  };
+  if (
+    Number.isFinite(statBounds.west) &&
+    Number.isFinite(statBounds.south) &&
+    Number.isFinite(statBounds.east) &&
+    Number.isFinite(statBounds.north) &&
+    statBounds.west >= -180 &&
+    statBounds.east <= 180 &&
+    statBounds.south >= -90 &&
+    statBounds.north <= 90 &&
+    statBounds.west < statBounds.east &&
+    statBounds.south < statBounds.north
+  ) {
+    return statBounds;
+  }
+
+  const positions = Array.isArray(mesh?.positions) ? mesh.positions : [];
+  let west = Number.POSITIVE_INFINITY;
+  let south = Number.POSITIVE_INFINITY;
+  let east = Number.NEGATIVE_INFINITY;
+  let north = Number.NEGATIVE_INFINITY;
+
+  for (let index = 0; index < positions.length; index += 2) {
+    const lon = Number(positions[index]);
+    const lat = Number(positions[index + 1]);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat) || lon < -180 || lon > 180 || lat < -90 || lat > 90) {
+      continue;
+    }
+    west = Math.min(west, lon);
+    south = Math.min(south, lat);
+    east = Math.max(east, lon);
+    north = Math.max(north, lat);
+  }
+
+  if (west < east && south < north) {
+    return { west, south, east, north };
+  }
+  return null;
+};
+
 const renderMeshFrame = async (frameIndex: number, shouldFly = false, sessionToken?: number) => {
   const frame = meshFrames.value[frameIndex];
   if (!frame || !props.viewer) {
@@ -856,8 +942,11 @@ const renderMeshFrame = async (frameIndex: number, shouldFly = false, sessionTok
       meshStatus.value = `正在渲染第 ${frameIndex + 1} / ${meshFrames.value.length} 帧`;
     }
     const mesh = await readMeshFrame(frame);
+    const meshExtent = getMeshLonLatExtent(mesh, frame);
+    setCurrentFloodExtent(meshExtent);
 
     const terrainHeights = await sampleMeshTerrainHeights(mesh);
+    const hasTerrainHeights = !!terrainHeights;
 
     if (renderToken !== floodPlaybackToken.value) {
       return;
@@ -868,8 +957,8 @@ const renderMeshFrame = async (frameIndex: number, shouldFly = false, sessionTok
       stats: mesh.stats || frame.stats,
       alpha: meshOpacity.value,
       heightScale: meshHeightScale.value,
-      surfaceOffset: 8,
-      depthTest: false,
+      surfaceOffset: hasTerrainHeights ? MESH_TERRAIN_SURFACE_OFFSET : MESH_FLAT_SURFACE_OFFSET,
+      depthTest: hasTerrainHeights,
       terrainHeights,
       colorRamp: MESH_COLOR_RAMPS[meshColorRamp.value] || MESH_COLOR_RAMPS.water
     });
@@ -1136,22 +1225,30 @@ const flyToMeshFlood = () => {
 
 const clearMeshFlood = () => {
   stopMeshPlayback();
-  hideMeshPlaybackDock();
+  floodPlaybackToken.value += 1;
+  hideMeshFloatingPanels();
   meshPreloadToken += 1;
   meshPreloadPromise = null;
   isMeshPreloading.value = false;
   meshFrameCache.clear();
+  meshTerrainHeightCache.clear();
   clearSelectedMeshFiles();
   removeMeshFlood();
+  meshFolder.value = '';
+  meshFrames.value = [];
+  activeMeshFrameIndex.value = 0;
   meshFileName.value = '尚未选择 Mesh 文件夹';
   meshPointCount.value = 0;
   meshTriangleCount.value = 0;
   meshDepthRange.value = '--';
   floodAreaText.value = '-';
   meshEvolutionTimeText.value = '-';
+  requestFloodAreaPanelClose();
   resetFloodAreaSeries();
-  resetFloodPointDepthSeries();
+  clearFloodDepthMonitorPoint();
+  setCurrentFloodExtent(null);
   lastLoadedFloodJson.value = null;
+  currentShowcaseCaseId.value = null;
   meshStatus.value = '洪水图层已清空';
 };
 
