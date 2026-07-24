@@ -15,6 +15,7 @@ import uuid
 import zipfile
 from urllib.parse import quote
 import xml.etree.ElementTree as ET
+import hashlib
 
 BACKEND_ROOT = os.path.abspath(os.path.dirname(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.dirname(BACKEND_ROOT))
@@ -79,6 +80,249 @@ MESH_UPLOAD_ROOT = os.path.abspath(os.path.join(app.config['UPLOAD_FOLDER'], 'me
 MESH_OUTPUT_ROOT = os.path.abspath(os.path.join(app.config['OUTPUT_FOLDER'], 'mesh_jobs'))
 os.makedirs(MESH_UPLOAD_ROOT, exist_ok=True)
 os.makedirs(MESH_OUTPUT_ROOT, exist_ok=True)
+
+LAYER_RESOURCE_ROOT = resolve_project_path(
+    ('LAYER_RESOURCE_ROOT', 'FLOOD_LAYER_RESOURCE_ROOT'),
+    os.path.join('backend', 'runtime', 'layers')
+)
+LAYER_REGISTRY_FILE = os.path.join(LAYER_RESOURCE_ROOT, 'registry.json')
+LAYER_UPLOAD_TMP_ROOT = os.path.join(LAYER_RESOURCE_ROOT, '_tmp')
+LAYER_KIND_DIRS = {
+    'terrain': os.path.join(LAYER_RESOURCE_ROOT, 'terrain'),
+    'imagery': os.path.join(LAYER_RESOURCE_ROOT, 'imagery')
+}
+PUBLIC_TERRAIN_ROOT = os.path.join(PROJECT_ROOT, 'public', 'data', 'terrain')
+PUBLIC_IMAGERY_ROOT = os.path.join(PROJECT_ROOT, 'public', 'data', 'imagery')
+for layer_dir in [LAYER_RESOURCE_ROOT, LAYER_UPLOAD_TMP_ROOT, *LAYER_KIND_DIRS.values()]:
+    os.makedirs(layer_dir, exist_ok=True)
+
+
+def _safe_json_load(path, default=None):
+    try:
+        with open(path, 'r', encoding='utf-8') as file:
+            return json.load(file)
+    except Exception:
+        return default
+
+
+def _safe_json_write(path, data):
+    temp_path = f'{path}.tmp'
+    with open(temp_path, 'w', encoding='utf-8') as file:
+        json.dump(data, file, ensure_ascii=False, indent=2)
+    os.replace(temp_path, path)
+
+
+def _load_layer_registry():
+    registry = _safe_json_load(LAYER_REGISTRY_FILE, default={})
+    return {
+        'terrain': list(registry.get('terrain') or []),
+        'imagery': list(registry.get('imagery') or [])
+    }
+
+
+def _save_layer_registry(registry):
+    _safe_json_write(LAYER_REGISTRY_FILE, {
+        'terrain': list(registry.get('terrain') or []),
+        'imagery': list(registry.get('imagery') or [])
+    })
+
+
+def _public_resource_url(*parts):
+    return '/' + '/'.join(quote(str(part).strip('/')) for part in parts if str(part).strip('/'))
+
+
+def _normalize_layer_bounds(value):
+    if isinstance(value, dict):
+        west = value.get('west')
+        south = value.get('south')
+        east = value.get('east')
+        north = value.get('north')
+    elif isinstance(value, (list, tuple)) and len(value) >= 4:
+        west, south, east, north = value[:4]
+    else:
+        return None
+
+    try:
+        west = float(west)
+        south = float(south)
+        east = float(east)
+        north = float(north)
+    except (TypeError, ValueError):
+        return None
+
+    if not (-180 <= west <= 180 and -180 <= east <= 180 and -90 <= south <= 90 and -90 <= north <= 90):
+        return None
+    if west >= east or south >= north:
+        return None
+    return {'west': west, 'south': south, 'east': east, 'north': north}
+
+
+def _extract_layer_bounds(*metadata_items):
+    for metadata in metadata_items:
+        if not isinstance(metadata, dict):
+            continue
+        for key in ('valid_bounds', 'latLonBounds', 'bounds'):
+            bounds = _normalize_layer_bounds(metadata.get(key))
+            if bounds:
+                return bounds
+    return None
+
+
+def _hash_resource_id(kind, name):
+    digest = hashlib.sha1(f'{kind}:{name}'.encode('utf-8')).hexdigest()[:10]
+    return f'builtin-{kind}-{digest}'
+
+
+def _detect_imagery_extension(resource_dir):
+    for extension in ('.png', '.jpg', '.jpeg', '.webp', '.terrain'):
+        for _root, _dirs, files in os.walk(resource_dir):
+            if any(name.lower().endswith(extension) for name in files):
+                return extension.lstrip('.').replace('jpeg', 'jpg')
+    return 'png'
+
+
+def _resource_from_public_dir(kind, name, path):
+    layer_json = _safe_json_load(os.path.join(path, 'layer.json'), default={})
+    meta_json = _safe_json_load(os.path.join(path, 'meta.json'), default={})
+
+    if kind == 'terrain':
+        if not os.path.isfile(os.path.join(path, 'layer.json')):
+            return None
+        bounds = _extract_layer_bounds(layer_json, meta_json)
+        if not bounds:
+            return None
+        return {
+            'id': _hash_resource_id('terrain', name),
+            'name': name,
+            'kind': 'terrain',
+            'source': 'builtin',
+            'url': _public_resource_url('data', 'terrain', name) + '/',
+            'bounds': bounds,
+            'minzoom': int(layer_json.get('minzoom') or meta_json.get('minzoom') or 0),
+            'maxzoom': int(layer_json.get('maxzoom') or meta_json.get('maxzoom') or 0),
+            'format': layer_json.get('format') or meta_json.get('contentType') or 'quantized-mesh-1.0',
+            'enabledForAutoMatch': True
+        }
+
+    if kind == 'imagery':
+        if not os.path.isfile(os.path.join(path, 'meta.json')):
+            return None
+        bounds = _extract_layer_bounds(meta_json)
+        if not bounds:
+            return None
+        extension = _detect_imagery_extension(path)
+        return {
+            'id': _hash_resource_id('imagery', name),
+            'name': name,
+            'kind': 'imagery',
+            'source': 'builtin',
+            'url': _public_resource_url('data', 'imagery', name) + '/',
+            'bounds': bounds,
+            'minzoom': int(meta_json.get('minzoom') or 0),
+            'maxzoom': int(meta_json.get('maxzoom') or 18),
+            'format': meta_json.get('contentType') or f'image/{extension}',
+            'extension': extension,
+            'tileScheme': meta_json.get('tiletrans') or 'google',
+            'visible': False,
+            'alpha': 0.88
+        }
+    return None
+
+
+def _list_builtin_layer_resources(kind):
+    root = PUBLIC_TERRAIN_ROOT if kind == 'terrain' else PUBLIC_IMAGERY_ROOT
+    if not os.path.isdir(root):
+        return []
+
+    resources = []
+    for name in sorted(os.listdir(root)):
+        path = os.path.join(root, name)
+        if not os.path.isdir(path):
+            continue
+        resource = _resource_from_public_dir(kind, name, path)
+        if resource:
+            resources.append(resource)
+    return resources
+
+
+def _validate_zip_members(zip_file):
+    for member in zip_file.infolist():
+        normalized = member.filename.replace('\\', '/')
+        if not normalized or normalized.startswith('/') or '..' in normalized.split('/'):
+            raise ValueError(f'ZIP 中包含不安全路径：{member.filename}')
+
+
+def _find_extracted_resource_root(extracted_root, kind):
+    required = 'layer.json' if kind == 'terrain' else 'meta.json'
+    direct = os.path.join(extracted_root, required)
+    if os.path.isfile(direct):
+        return extracted_root
+
+    child_dirs = [
+        os.path.join(extracted_root, name)
+        for name in os.listdir(extracted_root)
+        if os.path.isdir(os.path.join(extracted_root, name))
+    ]
+    if len(child_dirs) == 1 and os.path.isfile(os.path.join(child_dirs[0], required)):
+        return child_dirs[0]
+    return None
+
+
+def _build_uploaded_resource(kind, resource_id, name, root_dir):
+    layer_json = _safe_json_load(os.path.join(root_dir, 'layer.json'), default={})
+    meta_json = _safe_json_load(os.path.join(root_dir, 'meta.json'), default={})
+    bounds = _extract_layer_bounds(layer_json, meta_json)
+    if not bounds:
+        raise ValueError('切片元数据中缺少有效经纬度范围 bounds/valid_bounds。')
+
+    if kind == 'terrain':
+        if not os.path.isfile(os.path.join(root_dir, 'layer.json')):
+            raise ValueError('地形切片 ZIP 根目录必须包含 layer.json。')
+        if layer_json.get('format') and layer_json.get('format') != 'quantized-mesh-1.0':
+            raise ValueError('当前仅支持 quantized-mesh-1.0 地形切片。')
+        return {
+            'id': resource_id,
+            'name': name,
+            'kind': 'terrain',
+            'source': 'uploaded',
+            'url': f'/api/layer-resources/files/terrain/{resource_id}/',
+            'bounds': bounds,
+            'minzoom': int(layer_json.get('minzoom') or meta_json.get('minzoom') or 0),
+            'maxzoom': int(layer_json.get('maxzoom') or meta_json.get('maxzoom') or 0),
+            'format': layer_json.get('format') or 'quantized-mesh-1.0',
+            'enabledForAutoMatch': True,
+            'createdAt': datetime.utcnow().isoformat() + 'Z'
+        }
+
+    if not os.path.isfile(os.path.join(root_dir, 'meta.json')):
+        raise ValueError('影像切片 ZIP 根目录必须包含 meta.json。')
+    extension = _detect_imagery_extension(root_dir)
+    return {
+        'id': resource_id,
+        'name': name,
+        'kind': 'imagery',
+        'source': 'uploaded',
+        'url': f'/api/layer-resources/files/imagery/{resource_id}/',
+        'bounds': bounds,
+        'minzoom': int(meta_json.get('minzoom') or 0),
+        'maxzoom': int(meta_json.get('maxzoom') or 18),
+        'format': meta_json.get('contentType') or f'image/{extension}',
+        'extension': extension,
+        'tileScheme': meta_json.get('tiletrans') or 'google',
+        'visible': False,
+        'alpha': 0.88,
+        'createdAt': datetime.utcnow().isoformat() + 'Z'
+    }
+
+
+def _layer_resource_dir(kind, resource_id):
+    root = LAYER_KIND_DIRS.get(kind)
+    if not root:
+        return None
+    path = os.path.abspath(os.path.join(root, resource_id))
+    if os.path.commonpath([root, path]) != root:
+        return None
+    return path
 
 SHOWCASE_ROOT = resolve_project_path(('SHOWCASE_ROOT', 'FLOOD_SHOWCASE_ROOT'), 'data_showcase')
 SHOWCASE_CASES = {
@@ -904,6 +1148,120 @@ def build_mesh_cache():
     except Exception as e:
         return jsonify({'success': False, 'error': f'Mesh 转换失败: {str(e)}'}), 500
 
+
+@app.route('/api/layer-resources', methods=['GET'])
+def list_layer_resources():
+    registry = _load_layer_registry()
+    return jsonify({
+        'success': True,
+        'terrain': _list_builtin_layer_resources('terrain') + registry['terrain'],
+        'imagery': _list_builtin_layer_resources('imagery') + registry['imagery']
+    })
+
+
+@app.route('/api/layer-resources/upload', methods=['POST'])
+def upload_layer_resource():
+    kind = str(request.form.get('kind') or '').strip().lower()
+    if kind not in LAYER_KIND_DIRS:
+        return jsonify({'success': False, 'error': 'kind 必须是 terrain 或 imagery'}), 400
+
+    file = request.files.get('file')
+    if not file or not file.filename:
+        return jsonify({'success': False, 'error': '请选择 ZIP 文件'}), 400
+    if not file.filename.lower().endswith('.zip'):
+        return jsonify({'success': False, 'error': '当前仅支持上传 ZIP 切片包'}), 400
+
+    resource_id = uuid.uuid4().hex
+    display_name = str(request.form.get('name') or '').strip()
+    if not display_name:
+        display_name = os.path.splitext(os.path.basename(file.filename))[0] or f'{kind}-{resource_id[:8]}'
+
+    temp_zip = os.path.join(LAYER_UPLOAD_TMP_ROOT, f'{resource_id}.zip')
+    temp_extract_root = os.path.join(LAYER_UPLOAD_TMP_ROOT, resource_id)
+    final_root = _layer_resource_dir(kind, resource_id)
+
+    try:
+        os.makedirs(temp_extract_root, exist_ok=True)
+        file.save(temp_zip)
+
+        with zipfile.ZipFile(temp_zip, 'r') as archive:
+            _validate_zip_members(archive)
+            archive.extractall(temp_extract_root)
+
+        extracted_resource_root = _find_extracted_resource_root(temp_extract_root, kind)
+        if not extracted_resource_root:
+            required = 'layer.json' if kind == 'terrain' else 'meta.json'
+            raise ValueError(f'ZIP 根目录或唯一一级目录必须包含 {required}')
+
+        resource = _build_uploaded_resource(kind, resource_id, display_name, extracted_resource_root)
+        if final_root and os.path.isdir(final_root):
+            shutil.rmtree(final_root, ignore_errors=True)
+        shutil.move(extracted_resource_root, final_root)
+
+        registry = _load_layer_registry()
+        registry[kind] = [item for item in registry[kind] if item.get('id') != resource_id]
+        registry[kind].append(resource)
+        _save_layer_registry(registry)
+
+        return jsonify({'success': True, 'resource': resource})
+    except zipfile.BadZipFile:
+        return jsonify({'success': False, 'error': 'ZIP 文件无法读取或已损坏'}), 400
+    except ValueError as error:
+        return jsonify({'success': False, 'error': str(error)}), 400
+    except Exception as error:
+        return jsonify({'success': False, 'error': f'图层资源上传失败: {str(error)}'}), 500
+    finally:
+        if os.path.isfile(temp_zip):
+            os.remove(temp_zip)
+        if os.path.isdir(temp_extract_root):
+            shutil.rmtree(temp_extract_root, ignore_errors=True)
+
+
+@app.route('/api/layer-resources/<kind>/<resource_id>', methods=['DELETE'])
+def delete_layer_resource(kind, resource_id):
+    kind = str(kind or '').strip().lower()
+    if kind not in LAYER_KIND_DIRS:
+        return jsonify({'success': False, 'error': '图层类型不存在'}), 404
+
+    registry = _load_layer_registry()
+    resource = next((item for item in registry[kind] if item.get('id') == resource_id), None)
+    if not resource:
+        return jsonify({'success': False, 'error': '只能删除已上传的图层资源'}), 404
+
+    registry[kind] = [item for item in registry[kind] if item.get('id') != resource_id]
+    _save_layer_registry(registry)
+
+    resource_dir = _layer_resource_dir(kind, resource_id)
+    if resource_dir and os.path.isdir(resource_dir):
+        shutil.rmtree(resource_dir, ignore_errors=True)
+
+    return jsonify({'success': True})
+
+
+@app.route('/api/layer-resources/files/<kind>/<resource_id>/', defaults={'filename': 'layer.json'}, methods=['GET'])
+@app.route('/api/layer-resources/files/<kind>/<resource_id>/<path:filename>', methods=['GET'])
+def serve_layer_resource_file(kind, resource_id, filename):
+    kind = str(kind or '').strip().lower()
+    resource_dir = _layer_resource_dir(kind, resource_id)
+    if not resource_dir or not os.path.isdir(resource_dir):
+        return jsonify({'success': False, 'error': '图层资源不存在'}), 404
+
+    safe_filename = str(filename or '').replace('\\', '/').lstrip('/')
+    file_path = os.path.abspath(os.path.join(resource_dir, safe_filename))
+    if os.path.commonpath([resource_dir, file_path]) != resource_dir or not os.path.isfile(file_path):
+        return jsonify({'success': False, 'error': '图层文件不存在'}), 404
+
+    extension = os.path.splitext(file_path)[1].lower()
+    if extension == '.terrain':
+        mimetype = 'application/vnd.quantized-mesh'
+    elif extension == '.json':
+        mimetype = 'application/json'
+    else:
+        mimetype = mimetypes.guess_type(file_path)[0] or 'application/octet-stream'
+
+    response = send_from_directory(os.path.dirname(file_path), os.path.basename(file_path), mimetype=mimetype)
+    response.headers['Cache-Control'] = 'public, max-age=86400'
+    return response
 
 
 def _safe_mesh_job_id(job_id):

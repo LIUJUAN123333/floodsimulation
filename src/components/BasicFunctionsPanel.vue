@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import type * as Cesium from 'cesium';
+import LayerResourcePanel from './LayerResourcePanel.vue';
 import type { RoamUiState } from '../types/roam';
 import type { ShapefileImportReport, ShapefileImportSource } from '../types/shapefile';
 import { ShapefileImportError } from '../utils/shapefileRoute';
 
 const props = defineProps<{
   cesiumViewerRef?: any;
+  viewer?: Cesium.Viewer | null;
   roamState?: RoamUiState;
 }>();
 
-const activeBasicFlyout = ref<'fly' | 'measure' | 'roam' | null>(null);
+type BasicFlyout = 'fly' | 'measure' | 'layers' | 'roam';
+
+const activeBasicFlyout = ref<BasicFlyout | null>(null);
 const flyLon = ref('102.08');
 const flyLat = ref('29.59');
 const flyHeight = ref('20000');
@@ -24,9 +29,11 @@ const shapefileImportBusy = ref(false);
 const shapefileDropActive = ref(false);
 const basicIconDockRef = ref<HTMLElement | null>(null);
 const basicFlyoutRef = ref<HTMLElement | null>(null);
+const layersButtonRef = ref<HTMLButtonElement | null>(null);
 const flyoutDetached = ref(false);
 const flyoutDragging = ref(false);
 const flyoutPosition = ref({ x: 0, y: 0 });
+const layerPanelPlacement = ref({ left: 0, arrowLeft: 15 });
 let flyoutDragOffset = { x: 0, y: 0 };
 let flyoutPointerId: number | null = null;
 const roamPhase = computed(() => props.roamState?.phase ?? 'idle');
@@ -103,6 +110,33 @@ const flyoutStyle = computed(() => {
 const clampFlyoutPosition = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 const getFlyoutContainerRect = () => basicIconDockRef.value?.getBoundingClientRect() ?? { left: 0, top: 0 };
+
+const updateLayerPanelPlacement = () => {
+  const dockRect = basicIconDockRef.value?.getBoundingClientRect();
+  const buttonRect = layersButtonRef.value?.getBoundingClientRect();
+  if (!dockRect || !buttonRect) {
+    layerPanelPlacement.value = { left: 0, arrowLeft: 15 };
+    return;
+  }
+
+  const panelWidth = Math.min(390, Math.max(280, window.innerWidth - 24));
+  const anchorViewportX = buttonRect.left + buttonRect.width * 0.5;
+  const margin = 8;
+  const maxPanelLeft = Math.max(margin, window.innerWidth - panelWidth - margin);
+  const panelViewportLeft = clampFlyoutPosition(anchorViewportX - 20, margin, maxPanelLeft);
+  const arrowLeft = clampFlyoutPosition(anchorViewportX - panelViewportLeft - 5, 10, panelWidth - 18);
+
+  layerPanelPlacement.value = {
+    left: panelViewportLeft - dockRect.left,
+    arrowLeft
+  };
+};
+
+const handleLayerPanelResize = () => {
+  if (activeBasicFlyout.value === 'layers') {
+    updateLayerPanelPlacement();
+  }
+};
 
 const moveFlyoutTo = (clientX: number, clientY: number) => {
   const el = basicFlyoutRef.value;
@@ -201,15 +235,26 @@ const resetFlyoutPosition = () => {
   window.removeEventListener('mouseup', handleFlyoutMouseUp);
 };
 
-watch(activeBasicFlyout, () => {
+watch(activeBasicFlyout, (panel) => {
   resetFlyoutPosition();
+  if (panel === 'layers') {
+    void nextTick(updateLayerPanelPlacement);
+  }
+});
+
+onMounted(() => {
+  window.addEventListener('resize', handleLayerPanelResize);
 });
 
 onBeforeUnmount(() => {
   resetFlyoutPosition();
+  window.removeEventListener('resize', handleLayerPanelResize);
 });
 
-const toggleBasicFlyout = (panel: 'fly' | 'measure' | 'roam') => {
+const toggleBasicFlyout = (panel: BasicFlyout) => {
+  if (panel === 'layers') {
+    updateLayerPanelPlacement();
+  }
   activeBasicFlyout.value = activeBasicFlyout.value === panel ? null : panel;
 };
 
@@ -349,6 +394,9 @@ const handleClearRoam = () => {
     <button type="button" data-label="量测" class="basic-icon-btn" :class="{ active: activeBasicFlyout === 'measure' }" title="量测标绘" aria-label="量测标绘" @click="toggleBasicFlyout('measure')">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M4 17L17 4L20 7L7 20H4V17ZM14 7L17 10M11 10L13 12M8 13L10 15" /></svg>
     </button>
+    <button ref="layersButtonRef" type="button" data-label="图层" class="basic-icon-btn" :class="{ active: activeBasicFlyout === 'layers' }" title="图层资源" aria-label="图层资源" @click="toggleBasicFlyout('layers')">
+      <svg viewBox="0 0 24 24" aria-hidden><path d="M4 7L12 3L20 7L12 11L4 7ZM4 12L12 16L20 12M4 17L12 21L20 17" /></svg>
+    </button>
     <button type="button" data-label="漫游" class="basic-icon-btn" :class="{ active: activeBasicFlyout === 'roam' }" title="漫游" aria-label="漫游" @click="toggleBasicFlyout('roam')">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M5 18C9 18 7 6 12 6C17 6 15 18 19 18M5 18L3 16M5 18L3 20M19 18L21 16M19 18L21 20" /></svg>
     </button>
@@ -358,8 +406,14 @@ const handleClearRoam = () => {
     <button type="button" data-label="截图" class="basic-icon-btn" title="截图" aria-label="截图" @click="handleCaptureScreen">
       <svg viewBox="0 0 24 24" aria-hidden><path d="M4 8H8L10 5H14L16 8H20V19H4V8ZM12 17A4 4 0 1 0 12 9A4 4 0 0 0 12 17Z" /></svg>
     </button>
+    <LayerResourcePanel
+      :viewer="viewer"
+      :visible="activeBasicFlyout === 'layers'"
+      :anchor-left="layerPanelPlacement.left"
+      :arrow-left="layerPanelPlacement.arrowLeft"
+    />
     <div
-      v-if="activeBasicFlyout"
+      v-if="activeBasicFlyout && activeBasicFlyout !== 'layers'"
       ref="basicFlyoutRef"
       class="basic-tool-flyout"
       :class="[`flyout-${activeBasicFlyout}`, { 'is-detached': flyoutDetached, dragging: flyoutDragging }]"
@@ -707,7 +761,7 @@ const handleClearRoam = () => {
 }
 
 .flyout-roam {
-  --flyout-offset: 114px;
+  --flyout-offset: 152px;
   width: min(390px, calc(100vw - 24px));
   max-height: calc(100vh - 82px);
   overflow-x: hidden;
@@ -1432,7 +1486,7 @@ const handleClearRoam = () => {
   }
 
   .flyout-roam {
-    --flyout-offset: 108px;
+    --flyout-offset: 144px;
   }
 }
 

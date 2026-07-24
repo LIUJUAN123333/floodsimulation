@@ -40,6 +40,7 @@ htmlcov/
 backend/uploads/
 backend/outputs/
 backend/logs/
+backend/runtime/
 
 # Temporary / debug artifacts
 .playwright-cli/

@@ -239,24 +239,43 @@ const closeMonitorGroup = (id: MonitorGroupId) => {
 <style scoped>
 .monitor-panel {
   position: absolute;
-  inset: 0;
+  left: 20px;
+  top: 90px;
+  bottom: calc(var(--system-bottom-safe-space, 54px) + 24px);
+  width: min(360px, calc(100vw - 40px));
   z-index: 910;
-  display: grid;
-  grid-template-columns: minmax(320px, 360px) minmax(0, 1fr);
-  grid-template-rows: auto auto auto minmax(0, 1fr);
-  align-items: start;
-  gap: 10px 32px;
-  padding: 90px 20px calc(var(--system-bottom-safe-space, 54px) + 24px);
-  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  pointer-events: auto;
+  scrollbar-color: rgba(100, 213, 228, 0.42) rgba(0, 0, 0, 0.12);
+  scrollbar-width: thin;
+}
+
+.monitor-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.monitor-panel::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.monitor-panel::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background: rgba(100, 213, 228, 0.42);
 }
 
 .monitor-group {
   position: relative;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   width: 100%;
-  max-height: calc(100vh - 150px);
+  max-height: none;
   border: 1px solid var(--sys-border-color, rgba(0, 229, 255, 0.4));
   border-radius: 8px;
   background: var(--sys-glass-bg, rgba(13, 27, 49, 0.7));
@@ -267,21 +286,15 @@ const closeMonitorGroup = (id: MonitorGroupId) => {
 }
 
 .monitor-status {
-  grid-column: 1;
-  grid-row: 1;
-  max-height: calc(100vh - var(--system-bottom-safe-space, 54px) - 122px);
+  order: 1;
 }
 
 .monitor-trends {
-  grid-column: 1;
-  grid-row: 2;
-  max-height: 40vh;
+  order: 2;
 }
 
 .monitor-station-alarm {
-  grid-column: 1;
-  grid-row: 3;
-  max-height: 40vh;
+  order: 3;
 }
 
 .side-float-left-enter-active,
@@ -400,7 +413,7 @@ const closeMonitorGroup = (id: MonitorGroupId) => {
   gap: 10px;
   min-height: 0;
   padding: 12px;
-  overflow-y: auto;
+  overflow: visible;
 }
 
 .summary-grid {
@@ -668,9 +681,7 @@ const closeMonitorGroup = (id: MonitorGroupId) => {
 
 @media (max-width: 1280px) {
   .monitor-panel {
-    grid-template-columns: minmax(300px, 340px) minmax(0, 1fr);
-    gap: 14px 22px;
-    padding-inline: 20px;
+    width: min(340px, calc(100vw - 40px));
   }
 }
 
@@ -687,7 +698,10 @@ const closeMonitorGroup = (id: MonitorGroupId) => {
 
 @media (max-width: 980px) {
   .monitor-panel {
-    inset: 92px 12px var(--system-bottom-safe-space, 54px);
+    left: 12px;
+    top: 92px;
+    bottom: var(--system-bottom-safe-space, 54px);
+    width: calc(100vw - 24px);
     display: flex;
     flex-direction: column;
     gap: 12px;
